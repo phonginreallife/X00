@@ -3,7 +3,7 @@
 # hadolint global ignore=DL3008
 
 # Stage 1: Build BPF programs
-FROM ubuntu:22.04 AS bpf-builder
+FROM ubuntu:24.04 AS bpf-builder
 
 # Install BPF build dependencies
 # hadolint ignore=DL3009
