@@ -19,10 +19,10 @@ import (
 
 // PolicyManager manages KernelSeal security policies
 type PolicyManager struct {
-	config         *KernelSealConfig
-	configPath     string
-	secretInjector *secrets.Injector
-	mu             sync.RWMutex
+	config     *KernelSealConfig
+	configPath string
+	registry   *secrets.Registry
+	mu         sync.RWMutex
 
 	// Callbacks for policy updates
 	onPolicyUpdate func(types.PolicyConfig)
@@ -109,11 +109,12 @@ type MonitoringConfig struct {
 	AuditLog    string `yaml:"auditLog" json:"auditLog"` // Path to audit log file
 }
 
-// NewPolicyManager creates a new policy manager
-func NewPolicyManager(secretInjector *secrets.Injector) *PolicyManager {
+// NewPolicyManager creates a new policy manager. The registry may be nil, in
+// which case secret bindings are parsed but not registered.
+func NewPolicyManager(registry *secrets.Registry) *PolicyManager {
 	return &PolicyManager{
-		config:         DefaultConfig(),
-		secretInjector: secretInjector,
+		config:   DefaultConfig(),
+		registry: registry,
 	}
 }
 
@@ -264,7 +265,7 @@ func (pm *PolicyManager) applyPolicy() {
 }
 
 func (pm *PolicyManager) loadSecrets() {
-	if pm.secretInjector == nil {
+	if pm.registry == nil {
 		return
 	}
 
@@ -286,7 +287,7 @@ func (pm *PolicyManager) loadSecrets() {
 
 		// Register secrets based on selector
 		if binding.Selector.Binary != "" {
-			pm.secretInjector.RegisterSecrets(binding.Selector.Binary, secretsList)
+			pm.registry.RegisterForBinary(binding.Selector.Binary, secretsList)
 		}
 
 		// TODO: Handle other selector types (container, labels, namespace, cgroupPath)
@@ -381,15 +382,16 @@ func (pm *PolicyManager) GetConfig() *KernelSealConfig {
 	return pm.config
 }
 
-// ShouldInjectSecrets returns secrets for a given process
-func (pm *PolicyManager) ShouldInjectSecrets(binaryName string, cgroupID uint64) []secrets.Secret {
-	if pm.secretInjector == nil {
+// SecretsFor returns the secrets that apply to a process. Secret delivery itself
+// happens in internal/server; this is used for reporting and tests.
+func (pm *PolicyManager) SecretsFor(binaryName string, cgroupID uint64) []secrets.Secret {
+	if pm.registry == nil {
 		return nil
 	}
-	return pm.secretInjector.GetSecretsForProcess(binaryName, cgroupID)
+	return pm.registry.Lookup(binaryName, cgroupID)
 }
 
-// GetTargetBinaries returns a list of all binary names configured for secret injection
+// GetTargetBinaries returns every binary name that has secrets bound to it
 // This is used to configure kernel-side binary filtering
 func (pm *PolicyManager) GetTargetBinaries() []string {
 	pm.mu.RLock()

@@ -1,45 +1,67 @@
-#!/bin/bash
-# Demo Application
-# This script demonstrates KernelSeal's secret injection
+#!/bin/sh
+# KernelSeal Demo Application
+#
+# Started via: kernelseal-exec -- /demo/demo-app.sh
+#
+# The shim fetches this script's secrets from the agent and applies them to the
+# environment before exec'ing it, so they are read here as ordinary environment
+# variables. The same shim handshake marks this PID protected first, which is why
+# the environment is unreadable from outside the process.
+
+set -eu
+
+mask() {
+    value="$1"
+    length=$(printf '%s' "$value" | wc -c)
+    if [ "$length" -le 4 ]; then
+        printf '****'
+    else
+        printf '%.4s… (%s chars)' "$value" "$length"
+    fi
+}
 
 echo "=========================================="
 echo "  KernelSeal Demo Application"
 echo "=========================================="
-echo ""
-echo "This application will:"
-echo "  1. Run various commands that KernelSeal monitors"
-echo "  2. Show injected secrets (if KernelSeal is working)"
-echo ""
-echo "Starting demo loop..."
+echo "PID: $$"
 echo ""
 
-counter=0
-while true; do
-    counter=$((counter + 1))
-    echo "--- Iteration $counter ---"
-    
-    # Run 'cat' which should trigger secret injection
-    echo "[cat] Running cat command..."
-    cat /etc/hostname 2>/dev/null || echo "hostname not available"
-    
-    # Check if secrets were injected into environment
-    echo "[env] Checking for injected secrets..."
-    if [ -n "$DEMO_API_KEY" ]; then
-        echo "  ✅ DEMO_API_KEY is set: ${DEMO_API_KEY:0:10}..."
+echo "Secrets received from KernelSeal:"
+missing=0
+for name in DEMO_API_KEY DEMO_DB_PASSWORD; do
+    value=$(printenv "$name" 2>/dev/null || true)
+    if [ -n "$value" ]; then
+        printf '  %s = %s\n' "$name" "$(mask "$value")"
     else
-        echo "  ⏳ DEMO_API_KEY not yet injected"
+        printf '  %s is NOT set\n' "$name"
+        missing=1
     fi
-    
-    if [ -n "$DEMO_DB_PASSWORD" ]; then
-        echo "  ✅ DEMO_DB_PASSWORD is set: ${DEMO_DB_PASSWORD:0:10}..."
-    else
-        echo "  ⏳ DEMO_DB_PASSWORD not yet injected"
-    fi
-    
-    # Run 'sleep' which also has secrets configured
-    echo "[sleep] Running sleep command..."
-    sleep 2
-    
+done
+echo ""
+
+if [ "$missing" -eq 1 ]; then
+    echo "Some secrets are missing. Check that:"
+    echo "  - the agent is running and its socket is reachable"
+    echo "  - the config binds secrets to the binary \"demo-app.sh\""
+    echo "  - the source variables are set in the agent's environment"
     echo ""
-    sleep 3
+fi
+
+# allowSelfRead is on by default, so a process may inspect its own environment.
+echo "Reading our own /proc/$$/environ (allowed by allowSelfRead):"
+if head -c 64 "/proc/$$/environ" >/dev/null 2>&1; then
+    echo "  readable, as expected"
+else
+    echo "  refused - allowSelfRead is disabled in the active policy"
+fi
+echo ""
+
+echo "From another shell on this host, confirm the protection:"
+echo "  cat /proc/$$/environ    # expect: Operation not permitted"
+echo "  curl -s localhost:9090/metrics | grep kernelseal_access_blocked_total"
+echo ""
+
+echo "Running. Press Ctrl+C to stop."
+while true; do
+    sleep 30
 done

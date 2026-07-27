@@ -1,50 +1,53 @@
 # KernelSeal Demo Container
-# Builds KernelSeal with BPF programs for demonstration
+#
+# Builds the agent, the kernelseal-exec shim, and the BPF programs.
+#
+# The BPF compile needs bpf/vmlinux.h, which is generated from the host's BTF and
+# gitignored. Run `make vmlinux` before building so it is present in the build
+# context.
+# hadolint global ignore=DL3008
 
-FROM ubuntu:22.04 AS builder
+FROM golang:1.22-bookworm AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+# hadolint ignore=DL3009
+RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
     llvm \
     libbpf-dev \
-    linux-headers-generic \
-    golang-go \
     make \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Copy source
 COPY . .
 
-# Generate vmlinux.h if bpftool is available, otherwise use a minimal one
-RUN if command -v bpftool &> /dev/null && [ -f /sys/kernel/btf/vmlinux ]; then \
-        bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h; \
-    fi
+# Fail loudly rather than producing an image with no BPF objects, which would
+# only surface as a confusing runtime error.
+RUN make bpf
 
-# Build BPF programs
-RUN make bpf || echo "BPF build may fail in container, using pre-built objects"
+RUN CGO_ENABLED=0 go build -ldflags="-X main.Version=demo" -o kernelseal ./cmd && \
+    CGO_ENABLED=0 go build -ldflags="-X main.Version=demo" -o kernelseal-exec ./cmd/kernelseal-exec
 
-# Build Go binary
-RUN CGO_ENABLED=0 go build -o kernelseal ./cmd/main.go
+FROM debian:bookworm-slim
 
-# Runtime image
-FROM ubuntu:22.04
-
-RUN apt-get update && apt-get install -y \
-    libbpf0 \
+# hadolint ignore=DL3009
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
+    wget \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+COPY --from=builder /app/kernelseal /usr/local/bin/kernelseal
+COPY --from=builder /app/kernelseal-exec /usr/local/bin/kernelseal-exec
+COPY --from=builder /app/bpf/exec_monitor.bpf.o /bpf/exec_monitor.bpf.o
+COPY --from=builder /app/bpf/lsm_file_protect.bpf.o /bpf/lsm_file_protect.bpf.o
 
-# Copy binary and BPF objects
-COPY --from=builder /app/kernelseal /app/kernelseal
-COPY --from=builder /app/bpf/*.bpf.o /app/bpf/
+RUN chmod 555 /usr/local/bin/kernelseal /usr/local/bin/kernelseal-exec && \
+    chmod 444 /bpf/*.bpf.o && \
+    mkdir -p /etc/kernelseal /run/kernelseal
 
-# Default config location
 VOLUME /etc/kernelseal
 
-ENTRYPOINT ["/app/kernelseal"]
-CMD ["-config", "/etc/kernelseal/config.yaml", "-exec-monitor", "/app/bpf/exec_monitor.bpf.o", "-lsm", "/app/bpf/lsm_file_protect.bpf.o"]
+ENTRYPOINT ["/usr/local/bin/kernelseal"]
+CMD ["-config", "/etc/kernelseal/config.yaml", \
+     "-exec-monitor", "/bpf/exec_monitor.bpf.o", \
+     "-lsm", "/bpf/lsm_file_protect.bpf.o"]

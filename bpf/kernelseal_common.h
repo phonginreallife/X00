@@ -31,11 +31,11 @@ enum ks_enforce_mode {
     KS_MODE_ENFORCE    = 2,  // Log and block
 };
 
-// Exec event sent to user space for secret injection decisions
+// Process lifecycle event sent to user space for auditing and exit cleanup
 struct ks_exec_event {
     __u64 timestamp;
-    __u32 pid;
-    __u32 tgid;
+    __u32 pid;               // thread group leader, i.e. the userspace PID
+    __u32 tid;               // kernel thread id
     __u32 ppid;
     __u32 uid;
     __u32 gid;
@@ -49,8 +49,8 @@ struct ks_exec_event {
 // LSM audit/block event
 struct ks_lsm_event {
     __u64 timestamp;
-    __u32 pid;
-    __u32 tgid;
+    __u32 pid;               // thread group leader, i.e. the userspace PID
+    __u32 tid;               // kernel thread id
     __u32 uid;
     __u32 target_pid;        // PID being accessed
     __u8  event_type;        // blocked or audit
@@ -65,7 +65,7 @@ struct ks_policy_config {
     __u8 enforce_mode;       // ks_enforce_mode
     __u8 block_environ;      // Block /proc/*/environ reads
     __u8 block_mem;          // Block /proc/*/mem reads
-    __u8 block_maps;         // Block /proc/*/maps reads  
+    __u8 block_maps;         // Block /proc/*/maps reads
     __u8 block_ptrace;       // Block ptrace to protected processes
     __u8 allow_self_read;    // Allow process to read its own /proc files
     __u8 audit_all;          // Audit even allowed accesses

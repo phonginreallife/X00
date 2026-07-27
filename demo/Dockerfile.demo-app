@@ -1,17 +1,31 @@
 # Demo Application Container
-# A simple app that KernelSeal will monitor and inject secrets into
+#
+# An ordinary application image with no KernelSeal awareness beyond having the
+# shim available. In a real deployment the shim is copied in by an init container
+# rather than baked into the image; it is built in here to keep the demo to a
+# single docker compose command.
+
+FROM golang:1.22-alpine AS shim-builder
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=demo" \
+    -o /kernelseal-exec ./cmd/kernelseal-exec
 
 FROM alpine:3.19
 
-RUN apk add --no-cache \
-    bash \
-    curl \
-    python3
+# hadolint ignore=DL3018
+RUN apk add --no-cache curl
 
-WORKDIR /app
+COPY --from=shim-builder /kernelseal-exec /usr/local/bin/kernelseal-exec
+COPY demo/demo-app.sh /demo/demo-app.sh
+RUN chmod 555 /usr/local/bin/kernelseal-exec /demo/demo-app.sh
 
-# Create a simple demo script
-COPY demo/demo-app.sh /app/demo-app.sh
-RUN chmod +x /app/demo-app.sh
+WORKDIR /demo
 
-CMD ["/app/demo-app.sh"]
+# The shim resolves and exec's the real entrypoint, so the application itself
+# needs no changes.
+CMD ["/usr/local/bin/kernelseal-exec", "--", "/demo/demo-app.sh"]

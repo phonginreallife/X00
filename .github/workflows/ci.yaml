@@ -57,6 +57,16 @@ jobs:
       - name: Run unit tests
         run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./internal/...
 
+      # Guards the BPF/Go struct ABI. A mismatch is silent at runtime: the policy
+      # map update still succeeds, it just lands in the wrong fields.
+      - name: Check BPF/Go ABI
+        run: go test -v -run TestABI ./internal/types/
+
+      # Exercises the real socket handshake and exec path end to end. Needs no
+      # privileges, so it runs on every PR rather than only on a BPF-capable host.
+      - name: Run secret delivery tests
+        run: go test -v -race -run TestShimDelivery ./test/integration/...
+
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
@@ -136,6 +146,18 @@ jobs:
         if: steps.cache-bpf.outputs.cache-hit != 'true'
         run: make bpf
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Confirms every program and map the Go loader resolves by name exists in
+      # the compiled objects. A rename here fails at agent startup, not at build
+      # time, so it is checked against the real object files.
+      - name: Check BPF names match the loader
+        run: go test -v -run TestSpec ./internal/bpf/
+
       - name: Upload BPF objects
         uses: actions/upload-artifact@v4
         with:
@@ -166,17 +188,30 @@ jobs:
           restore-keys: |
             go-build-${{ runner.os }}-
 
-      - name: Build binary
+      - name: Build binaries
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-w -s -X main.Version=${{ github.sha }}" \
-            -o kernelseal ./cmd/main.go
+          make build VERSION=${{ github.sha }}
 
-      - name: Upload binary
+      - name: Verify version stamping
+        run: |
+          # The -X ldflag silently does nothing if main.Version is missing, so
+          # confirm the value actually landed in both binaries.
+          for bin in build/kernelseal build/kernelseal-exec; do
+            got="$("$bin" -version)"
+            echo "$bin -> $got"
+            case "$got" in
+              *"${{ github.sha }}"*) ;;
+              *) echo "::error::$bin did not report the expected version"; exit 1 ;;
+            esac
+          done
+
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: kernelseal-binary
-          path: kernelseal
+          name: kernelseal-binaries
+          path: |
+            build/kernelseal
+            build/kernelseal-exec
           retention-days: 7
 
   # Docker build - with layer caching

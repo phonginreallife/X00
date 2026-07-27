@@ -1,82 +1,92 @@
 #!/bin/bash
-# KernelSeal Demo Entry Point
+# KernelSeal all-in-one demo entrypoint.
+#
+# Starts the agent, then tells you how to launch a process through the shim and
+# confirm that its environment is unreadable from outside.
 
-set -e
+set -euo pipefail
 
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║           KernelSeal Secret Protection Demo                         ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
+echo "=============================================================="
+echo "            KernelSeal Secret Protection Demo"
+echo "=============================================================="
 echo ""
 
-# Set demo secrets
-# ⚠️ SECURITY: These are DEMO/PLACEHOLDER values only!
-# Never use these in production - replace with real secrets from a secret manager
-export KernelSeal_DEMO_API_KEY="${KernelSeal_DEMO_API_KEY:-demo-placeholder-api-key}"
-export KernelSeal_DEMO_DB_PASSWORD="${KernelSeal_DEMO_DB_PASSWORD:-demo-placeholder-password}"
-export KernelSeal_DEMO_SECRET="${KernelSeal_DEMO_SECRET:-demo-placeholder-secret}"
+# SECURITY: these are placeholder values for the demo only. Never use them in
+# production; source real values from a secret manager.
+export KERNELSEAL_DEMO_API_KEY="${KERNELSEAL_DEMO_API_KEY:-demo-placeholder-api-key}"
+export KERNELSEAL_DEMO_DB_PASSWORD="${KERNELSEAL_DEMO_DB_PASSWORD:-demo-placeholder-password}"
+export KERNELSEAL_DEMO_SECRET="${KERNELSEAL_DEMO_SECRET:-demo-placeholder-secret}"
 
-echo "📋 Demo Configuration:"
-echo "   API_KEY: ${KernelSeal_DEMO_API_KEY:0:15}..."
-echo "   DB_PASS: ${KernelSeal_DEMO_DB_PASSWORD:0:10}..."
+echo "Demo configuration:"
+echo "   API_KEY: ${KERNELSEAL_DEMO_API_KEY:0:15}..."
+echo "   DB_PASS: ${KERNELSEAL_DEMO_DB_PASSWORD:0:10}..."
 echo ""
 
-# Create config file
+# Secrets are bound to the binaries the shim will exec. Wrapping `sleep` keeps the
+# demo easy to reason about: it is a long-lived process with a stable PID.
 cat > /etc/kernelseal/config.yaml << 'EOF'
 version: v1
 
 policy:
-  mode: audit
+  mode: enforce
   blockEnviron: true
   blockMem: true
+  blockMaps: false
   blockPtrace: true
-  auditAll: true
+  allowSelfRead: true
+  auditAll: false
+  kernelBinaryFilter: true
 
 secrets:
-  - name: cat-demo
-    selector:
-      binary: "cat"
-    secretRefs:
-      - name: DEMO_API_KEY
-        source:
-          envRef: "KernelSeal_DEMO_API_KEY"
-      - name: DEMO_DB_PASSWORD
-        source:
-          envRef: "KernelSeal_DEMO_DB_PASSWORD"
-
   - name: sleep-demo
     selector:
       binary: "sleep"
     secretRefs:
+      - name: DEMO_API_KEY
+        source:
+          envRef: "KERNELSEAL_DEMO_API_KEY"
+      - name: DEMO_DB_PASSWORD
+        source:
+          envRef: "KERNELSEAL_DEMO_DB_PASSWORD"
+
+  - name: demo-app
+    selector:
+      binary: "demo-app.sh"
+    secretRefs:
       - name: DEMO_SECRET
         source:
-          envRef: "KernelSeal_DEMO_SECRET"
+          envRef: "KERNELSEAL_DEMO_SECRET"
 
-  - name: curl-demo
-    selector:
-      binary: "curl"
-    secretRefs:
-      - name: API_TOKEN
-        source:
-          envRef: "KernelSeal_DEMO_API_KEY"
+monitoring:
+  enabled: true
+  metricsPort: 9090
+  logLevel: info
 EOF
 
-echo "🚀 Starting KernelSeal..."
+echo "Starting KernelSeal..."
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "In another terminal, exec into this container and run:"
+echo "--------------------------------------------------------------"
+echo "From another terminal, start a process through the shim:"
 echo ""
-echo "  docker exec -it kernelseal-demo cat /etc/hostname"
-echo "  docker exec -it kernelseal-demo sleep 2"
-echo "  docker exec -it kernelseal-demo curl --version"
+echo "  docker exec -d kernelseal-demo \\"
+echo "    /usr/local/bin/kernelseal-exec -- sleep 600"
 echo ""
-echo "Watch this terminal for:"
-echo "  📍 EXEC: Process detection"
-echo "  💉 Secret injection"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Then find its PID and try to read its environment:"
+echo ""
+echo "  docker exec -it kernelseal-demo pgrep -x sleep"
+echo "  docker exec -it kernelseal-demo cat /proc/<pid>/environ"
+echo "      expected: Operation not permitted"
+echo ""
+echo "Check the counters:"
+echo ""
+echo "  docker exec -it kernelseal-demo \\"
+echo "    wget -qO- localhost:9090/metrics | grep kernelseal_"
+echo ""
+echo "Watch this terminal for [ISSUE] on delivery and [LSM BLOCKED] on denial."
+echo "--------------------------------------------------------------"
 echo ""
 
-# Run KernelSeal
-exec /app/kernelseal \
+exec /usr/local/bin/kernelseal \
     -config /etc/kernelseal/config.yaml \
-    -exec-monitor /app/bpf/exec_monitor.bpf.o \
-    -lsm /app/bpf/lsm_file_protect.bpf.o
+    -exec-monitor /bpf/exec_monitor.bpf.o \
+    -lsm /bpf/lsm_file_protect.bpf.o

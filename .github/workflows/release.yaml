@@ -51,25 +51,29 @@ jobs:
       - name: Build binaries for multiple platforms
         run: |
           mkdir -p dist
-          
-          # Linux AMD64
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
-            -o dist/kernelseal-linux-amd64 ./cmd/main.go
-          
-          # Linux ARM64
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-            -ldflags="-w -s -X main.Version=${{ github.ref_name }}" \
-            -o dist/kernelseal-linux-arm64 ./cmd/main.go
-          
-          # Create tarball with BPF objects
-          tar -czvf dist/kernelseal-${{ github.ref_name }}-linux-amd64.tar.gz \
-            -C dist kernelseal-linux-amd64 \
-            -C ${{ github.workspace }} bpf/*.bpf.o
-          
-          tar -czvf dist/kernelseal-${{ github.ref_name }}-linux-arm64.tar.gz \
-            -C dist kernelseal-linux-arm64 \
-            -C ${{ github.workspace }} bpf/*.bpf.o
+          VERSION=${{ github.ref_name }}
+
+          # Both the agent and the kernelseal-exec shim ship for each arch: the
+          # shim is copied into application containers, which may differ in
+          # architecture from where it was built.
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build \
+              -ldflags="-w -s -X main.Version=${VERSION}" \
+              -o dist/kernelseal-linux-$arch ./cmd
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build \
+              -ldflags="-w -s -X main.Version=${VERSION}" \
+              -o dist/kernelseal-exec-linux-$arch ./cmd/kernelseal-exec
+          done
+
+          # The BPF objects are architecture specific, so build them per arch
+          # rather than shipping the host's copy in both tarballs.
+          for arch in amd64 arm64; do
+            make clean-bpf
+            make bpf GOARCH=$arch
+            tar -czvf dist/kernelseal-${VERSION}-linux-$arch.tar.gz \
+              -C dist kernelseal-linux-$arch kernelseal-exec-linux-$arch \
+              -C ${{ github.workspace }} bpf/*.bpf.o
+          done
 
       - name: Generate checksums
         run: |

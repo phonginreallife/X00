@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// KernelSeal Exec Monitor: Detect process execution for secret injection
+// KernelSeal Exec Monitor: Track process lifecycle for audit and cleanup
+//
+// Secret delivery is driven by the kernelseal-exec shim connecting to the agent,
+// not by these tracepoints. They exist to report exec events for auditing and,
+// importantly, to report exits so protection is released promptly.
 
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
@@ -99,8 +103,8 @@ int handle_sys_enter_execve(struct trace_event_raw_sys_enter *ctx) {
         return 0;
     
     __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    __u32 tgid = pid_tgid & 0xFFFFFFFF;
+    __u32 pid = pid_tgid >> 32;  // thread group leader == userspace PID
+    __u32 tid = (__u32)pid_tgid; // kernel thread id
     
     // Get cgroup ID for container identification
     __u64 cgid = bpf_get_current_cgroup_id();
@@ -131,7 +135,7 @@ int handle_sys_enter_execve(struct trace_event_raw_sys_enter *ctx) {
     // Fill event data
     event->timestamp = now;
     event->pid = pid;
-    event->tgid = tgid;
+    event->tid = tid;
     event->uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     event->gid = bpf_get_current_uid_gid() >> 32;
     event->cgroup_id = cgid;
@@ -176,8 +180,8 @@ int handle_sched_process_exec(void *ctx) {
         return 0;
     
     __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    __u32 tgid = pid_tgid & 0xFFFFFFFF;
+    __u32 pid = pid_tgid >> 32;  // thread group leader == userspace PID
+    __u32 tid = (__u32)pid_tgid; // kernel thread id
     
     // Get cgroup ID
     __u64 cgid = bpf_get_current_cgroup_id();
@@ -214,7 +218,7 @@ int handle_sched_process_exec(void *ctx) {
     
     event->timestamp = now;
     event->pid = pid;
-    event->tgid = tgid;
+    event->tid = tid;
     event->uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     event->gid = bpf_get_current_uid_gid() >> 32;
     event->cgroup_id = cgid;
@@ -247,8 +251,8 @@ int handle_sched_process_exec(void *ctx) {
 SEC("tracepoint/sched/sched_process_exit")
 int handle_sched_process_exit(void *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = pid_tgid >> 32;
-    __u32 tgid = pid_tgid & 0xFFFFFFFF;
+    __u32 pid = pid_tgid >> 32;  // thread group leader == userspace PID
+    __u32 tid = (__u32)pid_tgid; // kernel thread id
     
     // Only report if this was a tracked PID
     __u64 *existing = bpf_map_lookup_elem(&seen_pids, &pid);
@@ -273,7 +277,7 @@ int handle_sched_process_exit(void *ctx) {
     
     event->timestamp = bpf_ktime_get_ns();
     event->pid = pid;
-    event->tgid = tgid;
+    event->tid = tid;
     event->uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     event->gid = bpf_get_current_uid_gid() >> 32;
     event->cgroup_id = cgid;

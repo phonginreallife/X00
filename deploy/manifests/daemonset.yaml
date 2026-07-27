@@ -43,18 +43,21 @@ spec:
       - name: kernelseal
         image: your-registry/kernelseal:latest
         imagePullPolicy: Always
+        # These override the image CMD, so the BPF object paths must be repeated
+        # here or the agent falls back to relative paths that do not resolve.
         args:
           - "-config=/etc/kernelseal/config.yaml"
+          - "-exec-monitor=/bpf/exec_monitor.bpf.o"
+          - "-lsm=/bpf/lsm_file_protect.bpf.o"
         
         securityContext:
           privileged: true
           capabilities:
             add:
-              - SYS_ADMIN
-              - BPF
-              - SYS_PTRACE
-              - PERFMON
-              - NET_ADMIN
+              - SYS_ADMIN      # Required to load BPF programs
+              - BPF            # Required to load BPF programs
+              - PERFMON        # Required to attach tracepoints
+              - SYS_RESOURCE   # Required to raise RLIMIT_MEMLOCK for BPF maps
         
         resources:
           requests:
@@ -87,8 +90,8 @@ spec:
         - name: config
           mountPath: /etc/kernelseal
           readOnly: true
-        - name: secrets-runtime
-          mountPath: /run/kernelseal/secrets
+        - name: kernelseal-socket
+          mountPath: /run/kernelseal
         - name: sys-kernel-debug
           mountPath: /sys/kernel/debug
           readOnly: true
@@ -122,9 +125,11 @@ spec:
       - name: config
         configMap:
           name: kernelseal-config
-      - name: secrets-runtime
+      # Node-wide delivery socket. Pods reach it by mounting the same hostPath;
+      # secrets themselves are never written to disk.
+      - name: kernelseal-socket
         hostPath:
-          path: /run/kernelseal/secrets
+          path: /run/kernelseal
           type: DirectoryOrCreate
       - name: sys-kernel-debug
         hostPath:

@@ -37,8 +37,9 @@ data:
       # Audit all accesses to protected resources (even if allowed)
       auditAll: false
     
-    # Secret bindings - define which secrets go to which processes
-    # Secrets are injected when a matching process starts
+    # Secret bindings - define which secrets go to which processes.
+    # A process receives them when it is started through kernelseal-exec and the
+    # binary it execs matches a selector below.
     secrets: []
     # Example:
     # - name: web-app-secrets

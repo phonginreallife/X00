@@ -37,11 +37,18 @@ policy:
   kernelBinaryFilter: true
 
 secrets:
+  # Each binding names a binary. When a process is started through
+  # kernelseal-exec, KernelSeal matches the binary being exec'd against these
+  # selectors and returns the matching secrets as environment variables.
+  #
+  # A binary listed here only receives secrets if it is launched via the shim:
+  #   kernelseal-exec -- /usr/bin/myapp
+  #
   # ------------------------------------------------------
   # WORKING: Environment variable source (envRef)
   # ------------------------------------------------------
-  
-  # Example: Inject secrets into sleep command (for testing)
+
+  # Example: pass secrets to the sleep command (for testing)
   - name: test-secrets
     selector:
       binary: "sleep"
@@ -53,7 +60,7 @@ secrets:
         source:
           envRef: DB_PASSWORD_VALUE      # Reads from $DB_PASSWORD_VALUE env var
 
-  # Example: Inject AWS credentials into AWS CLI
+  # Example: pass AWS credentials to the AWS CLI
   - name: aws-secrets
     selector:
       binary: "aws"
@@ -113,6 +120,7 @@ secrets:
   #           key: "password"
 
 monitoring:
+  # Serves /metrics, /healthz and /ready on metricsPort.
   enabled: true
   metricsPort: 9090
   logLevel: info  # debug, info, warn, error
@@ -121,8 +129,8 @@ monitoring:
 # ------------------------------------------------------
 # Quick Start Example
 # ------------------------------------------------------
-# 
-# 1. Create config with environment variable secrets:
+#
+# 1. Create a config with an environment variable secret:
 #
 #    cat > /etc/kernelseal/config.yaml << 'EOF'
 #    version: v1
@@ -142,12 +150,20 @@ monitoring:
 #              envRef: SECRET_KEY_VALUE
 #    EOF
 #
-# 2. Run KernelSeal with the secret value:
+# 2. Start the agent with the secret value in its own environment:
 #
 #    export SECRET_KEY_VALUE="my-secret-123"
-#    kernelseal -config /etc/kernelseal/config.yaml
+#    sudo kernelseal -config /etc/kernelseal/config.yaml \
+#      -exec-monitor bpf/exec_monitor.bpf.o \
+#      -lsm bpf/lsm_file_protect.bpf.o
 #
-# 3. Test protection:
+# 3. Start a process through the shim, which applies the secret and marks the
+#    process protected before it starts:
 #
-#    sleep 300 &
-#    cat /proc/$!/environ  # Should be blocked!
+#    kernelseal-exec -- sleep 300 &
+#
+# 4. Confirm the environment is unreadable from outside the process:
+#
+#    cat /proc/$!/environ   # Operation not permitted
+#
+#    Reading it from within the process still works while allowSelfRead is true.

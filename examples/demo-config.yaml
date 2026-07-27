@@ -1,50 +1,57 @@
 # KernelSeal Demo Configuration
-# This config injects secrets into common commands for testing
+#
+# Secrets are delivered to processes started through kernelseal-exec, so the
+# selectors below name the demo application rather than arbitrary commands.
 
 version: v1
 
 policy:
-  mode: audit  # Start with audit mode to see events without blocking
+  # audit so the demo works on kernels without BPF-LSM, which includes WSL2 and
+  # most stock kernels. Secrets are delivered and the shim warns that the kernel
+  # is not guarding them.
+  #
+  # Set this to enforce on a kernel booted with lsm=...,bpf to see reads actually
+  # refused. In enforce mode without BPF-LSM the agent withholds secrets entirely,
+  # which is correct but makes the demo look like it is doing nothing.
+  mode: audit
   blockEnviron: true
   blockMem: true
   blockMaps: false
   blockPtrace: true
   allowSelfRead: true
-  auditAll: true  # Log all access attempts
+  auditAll: false
+
+  # The demo only cares about the demo app, so let the kernel filter the rest.
+  kernelBinaryFilter: true
 
 secrets:
-  # Inject secrets into 'cat' command (for testing)
-  - name: cat-demo
+  - name: demo-app-secrets
     selector:
-      binary: "cat"
+      binary: "demo-app.sh"
     secretRefs:
       - name: DEMO_API_KEY
         source:
-          envRef: "KernelSeal_DEMO_API_KEY"
-      - name: DEMO_DB_PASSWORD  
+          envRef: "KERNELSEAL_DEMO_API_KEY"
+      - name: DEMO_DB_PASSWORD
         source:
-          envRef: "KernelSeal_DEMO_DB_PASSWORD"
+          envRef: "KERNELSEAL_DEMO_DB_PASSWORD"
 
-  # Inject secrets into 'sleep' command (for testing)
+  # Wrapping `sleep` is handy for testing protection by hand:
+  #   kernelseal-exec -- sleep 300 &
+  #   cat /proc/$!/environ   # Operation not permitted
   - name: sleep-demo
     selector:
       binary: "sleep"
     secretRefs:
       - name: DEMO_SECRET
         source:
-          envRef: "KernelSeal_DEMO_SECRET"
-
-  # Inject secrets into Python processes
-  - name: python-demo
-    selector:
-      binary: "python3"
-    secretRefs:
-      - name: PYTHON_API_KEY
-        source:
-          envRef: "KernelSeal_PYTHON_API_KEY"
+          envRef: "KERNELSEAL_DEMO_SECRET"
 
 monitoring:
   enabled: true
   metricsPort: 9090
-  logLevel: debug
+  # info keeps the interesting lines visible. Set to debug to also trace every
+  # exec of a target binary, which is very noisy if something on the host runs
+  # one of them in a loop.
+  logLevel: info
   auditLog: /tmp/kernelseal-audit.log

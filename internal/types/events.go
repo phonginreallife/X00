@@ -73,12 +73,16 @@ func (m EnforceMode) String() string {
 	}
 }
 
-// ExecEvent represents a process execution event from BPF
-// Must match struct kernelseal_exec_event in kernelseal_common.h exactly
+// ExecEvent represents a process execution event from BPF.
+//
+// The field order and explicit padding must match struct ks_exec_event in
+// bpf/kernelseal_common.h byte for byte. encoding/binary reads this struct
+// packed, so C's alignment padding has to be spelled out here. TestABI_* in
+// events_test.go pins the offsets; do not reorder without updating both.
 type ExecEvent struct {
 	Timestamp uint64
-	PID       uint32
-	TGID      uint32
+	PID       uint32 // thread group leader, i.e. the userspace PID
+	TID       uint32 // kernel thread id
 	PPID      uint32
 	UID       uint32
 	GID       uint32
@@ -100,11 +104,12 @@ func (e *ExecEvent) GetFilename() string {
 	return cStringToGo(e.Filename[:])
 }
 
-// LSMEvent represents an LSM audit/block event from BPF
+// LSMEvent represents an LSM audit/block event from BPF.
+// Must match struct ks_lsm_event in bpf/kernelseal_common.h byte for byte.
 type LSMEvent struct {
 	Timestamp  uint64
-	PID        uint32
-	TGID       uint32
+	PID        uint32 // thread group leader, i.e. the userspace PID
+	TID        uint32 // kernel thread id
 	UID        uint32
 	TargetPID  uint32
 	EventType  EventType
@@ -124,7 +129,10 @@ func (e *LSMEvent) GetPath() string {
 	return cStringToGo(e.Path[:])
 }
 
-// PolicyConfig represents the BPF policy configuration
+// PolicyConfig represents the BPF policy configuration.
+// Must match struct ks_policy_config in bpf/kernelseal_common.h byte for byte.
+// A mismatch here is silent: both sides are 8 bytes, so the map update succeeds
+// while every field past the divergence point lands in the wrong slot.
 type PolicyConfig struct {
 	EnforceMode   EnforceMode
 	BlockEnviron  uint8

@@ -1,44 +1,59 @@
 # KernelSeal Demo with Docker
-# This demonstrates KernelSeal monitoring a container and injecting secrets
-
-version: '3.8'
+#
+# The agent loads the BPF programs and serves secrets over a unix socket on a
+# shared volume. The demo app's entrypoint is wrapped with kernelseal-exec, which
+# fetches those secrets and applies them before starting the real process.
+#
+# The two containers share a PID namespace so the agent can protect the app's
+# processes, and share the socket volume so the shim can reach the agent.
 
 services:
-  # KernelSeal Sidecar - runs privileged to load BPF programs
   kernelseal:
     build:
       context: ..
       dockerfile: demo/Dockerfile.kernelseal
     privileged: true
-    pid: "host"  # Share PID namespace to monitor other containers
+    pid: "host"
     volumes:
-      - /sys/kernel/debug:/sys/kernel/debug:ro
+      - /sys/kernel/btf:/sys/kernel/btf:ro
       - /sys/fs/bpf:/sys/fs/bpf
       - ../examples/demo-config.yaml:/etc/kernelseal/config.yaml:ro
+      - kernelseal-socket:/run/kernelseal
     environment:
-      - KernelSeal_DEMO_API_KEY=docker-demo-api-key-12345
-      - KernelSeal_DEMO_DB_PASSWORD=docker-demo-password
-      - KernelSeal_DEMO_SECRET=docker-demo-secret
+      # The agent resolves envRef sources from its own environment.
+      - KERNELSEAL_DEMO_API_KEY=docker-demo-api-key-12345
+      - KERNELSEAL_DEMO_DB_PASSWORD=docker-demo-password
+      - KERNELSEAL_DEMO_SECRET=docker-demo-secret
     cap_add:
-      - SYS_ADMIN
-      - BPF
-      - SYS_PTRACE
-      - NET_ADMIN
-    networks:
-      - kernelseal-demo
+      - SYS_ADMIN      # Required to load BPF programs
+      - BPF            # Required to load BPF programs
+      - PERFMON        # Required to attach tracepoints
+      - SYS_RESOURCE   # Required to raise RLIMIT_MEMLOCK for BPF maps
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kernelseal", "-version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-  # Demo application that KernelSeal will monitor
   demo-app:
     build:
       context: ..
       dockerfile: demo/Dockerfile.demo-app
     depends_on:
-      - kernelseal
-    networks:
-      - kernelseal-demo
-    # This container will have secrets injected by KernelSeal
-    command: ["sh", "-c", "echo 'Demo app running...'; while true; do echo 'Tick'; sleep 5; done"]
+      kernelseal:
+        condition: service_started
+    pid: "host"
+    volumes:
+      - kernelseal-socket:/run/kernelseal
+    # The shim waits for the agent, applies the secrets, then replaces itself
+    # with the demo app.
+    command: ["/usr/local/bin/kernelseal-exec", "--", "/demo/demo-app.sh"]
 
-networks:
-  kernelseal-demo:
-    driver: bridge
+volumes:
+  # Memory-backed so the socket never lands on disk.
+  kernelseal-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs

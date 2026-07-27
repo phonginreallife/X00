@@ -39,8 +39,8 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestNewPolicyManager(t *testing.T) {
-	injector := secrets.NewInjector()
-	pm := NewPolicyManager(injector)
+	registry := secrets.NewRegistry()
+	pm := NewPolicyManager(registry)
 
 	if pm == nil {
 		t.Fatal("NewPolicyManager returned nil")
@@ -293,24 +293,24 @@ policy:
 	}
 }
 
-func TestPolicyManager_ShouldInjectSecrets_NoInjector(t *testing.T) {
+func TestPolicyManager_SecretsFor_NoRegistry(t *testing.T) {
 	pm := NewPolicyManager(nil)
 
-	result := pm.ShouldInjectSecrets("myapp", 12345)
+	result := pm.SecretsFor("myapp", 12345)
 	if result != nil {
-		t.Errorf("Expected nil secrets when no injector, got %v", result)
+		t.Errorf("Expected nil secrets when no registry, got %v", result)
 	}
 }
 
-func TestPolicyManager_ShouldInjectSecrets_WithInjector(t *testing.T) {
-	injector := secrets.NewInjector()
-	injector.RegisterSecrets("myapp", []secrets.Secret{
+func TestPolicyManager_SecretsFor_WithRegistry(t *testing.T) {
+	registry := secrets.NewRegistry()
+	registry.RegisterForBinary("myapp", []secrets.Secret{
 		{Name: "DB_PASSWORD", Value: "secret123"},
 	})
 
-	pm := NewPolicyManager(injector)
+	pm := NewPolicyManager(registry)
 
-	result := pm.ShouldInjectSecrets("myapp", 0)
+	result := pm.SecretsFor("myapp", 0)
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 secret, got %d", len(result))
 	}
@@ -429,14 +429,14 @@ secrets:
 		t.Fatalf("Failed to write test config: %v", err)
 	}
 
-	injector := secrets.NewInjector()
-	pm := NewPolicyManager(injector)
+	registry := secrets.NewRegistry()
+	pm := NewPolicyManager(registry)
 
 	if err := pm.LoadConfig(configPath); err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	result := injector.GetSecretsForProcess("postgres", 0)
+	result := registry.Lookup("postgres", 0)
 	if len(result) != 1 {
 		t.Fatalf("Expected 1 secret, got %d", len(result))
 	}

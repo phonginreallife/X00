@@ -1,11 +1,13 @@
 # KernelSeal Multi-stage Dockerfile
-# Builds both the BPF programs and Go binary
+# Builds the BPF programs, the privileged agent, and the kernelseal-exec shim.
 # hadolint global ignore=DL3008
+
+ARG VERSION=dev
+ARG TARGETARCH=amd64
 
 # Stage 1: Build BPF programs
 FROM ubuntu:22.04 AS bpf-builder
 
-# Install BPF build dependencies
 # hadolint ignore=DL3009
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -20,33 +22,40 @@ WORKDIR /app
 COPY bpf/ ./bpf/
 COPY Makefile ./
 
-# Generate vmlinux.h if not present and build BPF programs
-RUN make bpf || echo "BPF build skipped - will use pre-built objects"
+ARG TARGETARCH
 
-# Stage 2: Build Go binary
+# vmlinux.h comes from the build host's BTF, which is not available inside this
+# stage, so it must be committed or mounted. Failing here is better than
+# silently shipping an image with no BPF objects.
+RUN make bpf GOARCH="${TARGETARCH}"
+
+# Stage 2: Build Go binaries
 FROM golang:1.22-alpine AS go-builder
 WORKDIR /app
 
-# Install build dependencies
-# hadolint ignore=DL3018
-RUN apk add --no-cache git
-
-# Copy go mod files first for caching
+# Copy go mod files first so dependency downloads cache independently of source.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-w -s -X main.Version=0.1.0" \
-    -o kernelseal ./cmd/main.go
+ARG VERSION
+ARG TARGETARCH
+
+# Both binaries are static: the agent so the runtime image stays minimal, and
+# the shim because it is copied into arbitrary application containers.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build \
+    -ldflags="-w -s -X main.Version=${VERSION}" \
+    -o kernelseal ./cmd && \
+    CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build \
+    -ldflags="-w -s -X main.Version=${VERSION}" \
+    -o kernelseal-exec ./cmd/kernelseal-exec
 
 # Stage 3: Final runtime image
 FROM debian:bookworm-slim
 
-# Security: Run apt with minimal privileges and clean up
+ARG VERSION
+
 # hadolint ignore=DL3009
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -54,45 +63,43 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Security: Create non-root user (KernelSeal needs root for BPF, but prepare for future)
-RUN groupadd -r kernelseal && useradd -r -g kernelseal -s /sbin/nologin kernelseal
+# KernelSeal needs root for BPF, but the group is used to share the delivery
+# socket with an application container running as non-root.
+RUN groupadd -r -g 1000 kernelseal && \
+    useradd -r -g kernelseal -u 1000 -s /sbin/nologin kernelseal
 
-# Create necessary directories with proper permissions
-RUN mkdir -p /etc/kernelseal /var/log/kernelseal /run/kernelseal/secrets /bpf \
-    && chown -R kernelseal:kernelseal /var/log/kernelseal /run/kernelseal \
-    && chmod 750 /var/log/kernelseal /run/kernelseal /run/kernelseal/secrets
+# /run/kernelseal holds the secret delivery socket. Secrets are never written to
+# disk, so there is no secret directory to create.
+RUN mkdir -p /etc/kernelseal /var/log/kernelseal /run/kernelseal /bpf \
+    && chown -R root:kernelseal /var/log/kernelseal /run/kernelseal \
+    && chmod 750 /var/log/kernelseal /run/kernelseal
 
-# Copy BPF objects (read-only)
 COPY --from=bpf-builder --chown=root:root /app/bpf/*.bpf.o /bpf/
 RUN chmod 444 /bpf/*.bpf.o
 
-# Copy binary (read-only, executable)
 COPY --from=go-builder --chown=root:root /app/kernelseal /usr/local/bin/kernelseal
-RUN chmod 555 /usr/local/bin/kernelseal
+COPY --from=go-builder --chown=root:root /app/kernelseal-exec /usr/local/bin/kernelseal-exec
+RUN chmod 555 /usr/local/bin/kernelseal /usr/local/bin/kernelseal-exec
 
-# Copy default config (read-only)
 COPY --chown=root:kernelseal examples/config.yaml /etc/kernelseal/config.yaml
 RUN chmod 440 /etc/kernelseal/config.yaml
 
-# Security labels
-LABEL org.opencontainers.image.title="KernelSeal Security Sidecar" \
-      org.opencontainers.image.description="Kubernetes sidecar for eBPF-based secret protection" \
+LABEL org.opencontainers.image.title="KernelSeal" \
+      org.opencontainers.image.description="Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM" \
       org.opencontainers.image.vendor="KernelSeal" \
       org.opencontainers.image.licenses="Apache-2.0" \
-      org.opencontainers.image.source="https://github.com/YOUR_ORG/kernelseal" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/phonginreallife/kernelseal" \
       security.privileged="true" \
-      security.capabilities="BPF,SYS_ADMIN,SYS_PTRACE"
+      security.capabilities="BPF,SYS_ADMIN,PERFMON"
 
-# Set working directory
 WORKDIR /
 
-# Health check - use shell form for proper exit handling
+# Liveness is checked over HTTP by Kubernetes; this only needs to confirm the
+# binary in the image is runnable.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD /usr/local/bin/kernelseal -version || exit 1
+    CMD ["/usr/local/bin/kernelseal", "-version"]
 
-# Note: KernelSeal requires root for BPF operations
-# USER kernelseal  # Uncomment when running non-BPF components
-
-# Default command
+# KernelSeal requires root for BPF operations.
 ENTRYPOINT ["/usr/local/bin/kernelseal"]
 CMD ["-config=/etc/kernelseal/config.yaml", "-exec-monitor=/bpf/exec_monitor.bpf.o", "-lsm=/bpf/lsm_file_protect.bpf.o"]

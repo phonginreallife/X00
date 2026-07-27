@@ -13,6 +13,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
+	"github.com/cilium/ebpf/rlimit"
 
 	"kernelseal/internal/types"
 )
@@ -57,6 +58,19 @@ type lsmObjects struct {
 	PolicyConfig        *ebpf.Map     `ebpf:"policy_config"`
 }
 
+// removeMemlock lifts RLIMIT_MEMLOCK once per process.
+//
+// Kernels before 5.11 charge BPF maps and programs against RLIMIT_MEMLOCK, and
+// containers commonly inherit a limit far below what loading these programs
+// needs. Without this, map creation fails with EPERM in a way that reads like a
+// permissions problem rather than a resource limit.
+var removeMemlock = sync.OnceValue(func() error {
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return fmt.Errorf("removing memlock rlimit: %w", err)
+	}
+	return nil
+})
+
 // NewManager creates a new BPF manager
 func NewManager() *Manager {
 	return &Manager{
@@ -80,6 +94,10 @@ func (m *Manager) SetLSMHandler(handler func(*types.LSMEvent)) {
 
 // LoadExecMonitor loads the exec monitor BPF program
 func (m *Manager) LoadExecMonitor(objectPath string) error {
+	if err := removeMemlock(); err != nil {
+		return err
+	}
+
 	spec, err := ebpf.LoadCollectionSpec(objectPath)
 	if err != nil {
 		return fmt.Errorf("failed to load exec monitor spec: %w", err)
@@ -124,8 +142,12 @@ func (m *Manager) LoadExecMonitor(objectPath string) error {
 func (m *Manager) LoadLSM(objectPath string) error {
 	// Check if BPF LSM is available
 	if !isLSMAvailable() {
-		log.Println("[WARN] BPF-LSM not available, running in audit-only mode")
+		log.Println("[WARN] BPF-LSM not available, running without file protection")
 		return nil
+	}
+
+	if err := removeMemlock(); err != nil {
+		return err
 	}
 
 	spec, err := ebpf.LoadCollectionSpec(objectPath)
@@ -205,10 +227,20 @@ func (m *Manager) AllowPID(pid uint32) error {
 	return nil
 }
 
-// ProtectPID marks a PID as protected (secrets injected)
+// ErrLSMUnavailable reports that the LSM programs are not loaded, so no
+// kernel-side protection can be applied. Callers that are about to release
+// secrets must treat this as a failure rather than a no-op.
+var ErrLSMUnavailable = errors.New("BPF-LSM not loaded")
+
+// IsLSMLoaded reports whether the LSM programs are active.
+func (m *Manager) IsLSMLoaded() bool {
+	return m.lsmObjs.ProtectedPids != nil
+}
+
+// ProtectPID marks a PID as protected (secrets released to it)
 func (m *Manager) ProtectPID(pid uint32) error {
 	if m.lsmObjs.ProtectedPids == nil {
-		return nil // LSM not loaded
+		return ErrLSMUnavailable
 	}
 
 	value := uint8(1)
@@ -220,17 +252,65 @@ func (m *Manager) ProtectPID(pid uint32) error {
 	return nil
 }
 
-// UnprotectPID removes a PID from the protected list
+// UnprotectPID removes a PID from the protected list. Removing a PID that was
+// never protected is not an error: the exit path calls this for every process it
+// tracked, most of which never received secrets.
 func (m *Manager) UnprotectPID(pid uint32) error {
 	if m.lsmObjs.ProtectedPids == nil {
 		return nil
 	}
 
 	if err := m.lsmObjs.ProtectedPids.Delete(pid); err != nil {
+		if errors.Is(err, ebpf.ErrKeyNotExist) {
+			return nil
+		}
 		return fmt.Errorf("failed to unprotect PID %d: %w", pid, err)
 	}
 
 	return nil
+}
+
+// TrackPID records a PID in the exec monitor's seen map so that the
+// sched_process_exit tracepoint reports its exit, which is what drives cleanup.
+// Without this, a process that registered through the socket rather than through
+// an exec event would never be cleaned up.
+func (m *Manager) TrackPID(pid uint32) error {
+	if m.execObjs.SeenPids == nil {
+		return errors.New("exec monitor not loaded")
+	}
+
+	// The value is a ktime timestamp used only for short-window exec dedup.
+	// Zero means "long ago", so a genuine exec event for this PID still reports.
+	var firstSeen uint64
+	if err := m.execObjs.SeenPids.Put(pid, firstSeen); err != nil {
+		return fmt.Errorf("failed to track PID %d: %w", pid, err)
+	}
+
+	return nil
+}
+
+// ListProtectedPIDs returns every PID currently marked protected. Used by the
+// reconciler to drop entries whose process is gone.
+func (m *Manager) ListProtectedPIDs() ([]uint32, error) {
+	if m.lsmObjs.ProtectedPids == nil {
+		return nil, nil
+	}
+
+	var (
+		out   []uint32
+		key   uint32
+		value uint8
+	)
+
+	iter := m.lsmObjs.ProtectedPids.Iterate()
+	for iter.Next(&key, &value) {
+		out = append(out, key)
+	}
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("iterating protected PIDs: %w", err)
+	}
+
+	return out, nil
 }
 
 // AddTargetCgroup adds a cgroup ID to the monitoring list

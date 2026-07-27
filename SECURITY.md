@@ -67,10 +67,11 @@ Please include:
 
 **In Scope:**
 
-- KernelSeal sidecar binary and dependencies
+- KernelSeal agent binary and dependencies
+- The `kernelseal-exec` shim and the socket protocol between them
 - BPF programs (`exec_monitor.bpf.c`, `lsm_file_protect.bpf.c`)
-- Secret injection mechanisms
-- Policy enforcement bypass
+- Secret delivery and the protect-before-release ordering
+- Policy enforcement bypass, including BPF/Go struct layout mismatches
 - Container/VM escape via KernelSeal
 - Privilege escalation
 - Information disclosure
@@ -130,9 +131,72 @@ Please include:
 |---------------|------------|----------------|
 | `/proc/*/environ` read | BPF-LSM `file_open` hook | Blocks unauthorized readers |
 | `/proc/*/mem` read | BPF-LSM `file_open` hook | Blocks memory inspection |
+| `/proc/*/maps` read | BPF-LSM `file_open` hook | Optional, via `blockMaps` |
 | `ptrace` attach | BPF-LSM `ptrace_access_check` | Prevents debugger attach |
-| Environment inheritance | Process-specific injection | Secrets not in parent env |
+| Secrets on disk | Socket delivery | Nothing is written to a filesystem |
+| Unprotected startup window | Protect-before-release ordering | See below |
+| Enforcement unavailable | Fail closed | Secrets withheld in enforce mode |
 | Container escape | Kernel verification | BPF verifier guarantees |
+
+### Secret Delivery and the Startup Window
+
+Secrets are delivered by `kernelseal-exec`, which connects to the agent, receives
+the environment, and then `execve`s the target binary. The agent marks the
+caller's PID protected **before** writing the response. Because `execve` preserves
+the PID, the application starts already protected; there is no interval during
+which a process holds secrets that can still be read out of `/proc`.
+
+Two properties follow:
+
+- The caller is identified with `SO_PEERCRED`, which the kernel populates. A
+  client cannot claim to be a different PID or UID.
+- The PID is paired with its start time from `/proc/<pid>/stat` and re-checked
+  after protection is applied, so a caller that exits mid-handshake cannot cause
+  protection to be attached to a recycled PID.
+
+### Authorization Boundary
+
+**Socket reachability is the authorization boundary.** The agent cannot verify
+which binary the shim is about to execute: at handshake time `/proc/<pid>/exe`
+still points at the shim itself, because the `execve` has not happened yet. The
+binary name in the request therefore selects *which* secrets apply; it is not an
+identity claim.
+
+The practical consequence is that any process able to open the socket can request
+the secrets bound to any configured binary by naming it. Scope the socket
+accordingly:
+
+- Mount the socket volume only into pods that should receive those secrets. Use a
+  pod-scoped `emptyDir` rather than a node-wide `hostPath` when a DaemonSet is not
+  required.
+- Prefer one binding set per pod over a single node-wide configuration listing
+  every application's secrets.
+- Keep the socket mode at the default `0660` and use `fsGroup` to share it, rather
+  than widening it to `0666`.
+
+### Trust Boundary
+
+Inside the trust boundary:
+
+- The agent, which holds every resolved secret value in memory.
+- The `kernelseal-exec` shim, which holds plaintext secrets between reading the
+  socket and calling `execve`.
+- The BPF programs and their maps.
+
+Outside the trust boundary:
+
+- The application itself. It receives its own secrets and nothing else.
+- Every other process on the host, including root, which the LSM hooks refuse.
+
+### Residual Risks
+
+| Risk | Impact | Notes |
+|------|--------|-------|
+| Same-pod process requests another binary's secrets | Reads secrets bound to any configured binary | Socket reachability is the boundary; scope volumes per pod |
+| Child processes inherit the environment | Children hold secrets but are not themselves protected | Protection is per-PID |
+| Secrets remain in the agent's heap | Values may persist until garbage collected | Go strings cannot be reliably zeroed |
+| BPF-LSM unavailable | No enforcement possible | Enforce mode fails closed and reports `not ready` |
+| Compromised agent or shim image | Full disclosure | Both are inside the trust boundary; verify image integrity |
 
 ## Security Architecture
 
@@ -165,13 +229,34 @@ KernelSeal's BPF programs run in kernel space with strict safety guarantees:
 | **Memory Safety** | All memory accesses bounds-checked |
 | **Type Safety** | BTF (BPF Type Format) ensures type correctness |
 | **Minimal Hooks** | Only essential syscalls are intercepted |
+| **ABI Pinning** | Struct layouts are asserted against the C header in CI |
 
-Secret States:
-1. At Rest    → Encrypted in source (Vault/K8s Secret)
-2. In Transit → Memory-only transfer via memfd
-3. In Use     → Protected by BPF-LSM hooks
-4. Disposal   → Process termination clears memory
-```
+#### Why the ABI is a security control
+
+The policy the kernel enforces is written from user space into a BPF map as a raw
+struct. If the Go struct and the C struct disagree on field order, the map update
+still succeeds, because both are the same size; the kernel simply reads each
+setting from the wrong byte. The result is a policy that silently differs from the
+configured one, with no error anywhere.
+
+This is not hypothetical. An earlier revision of
+`bpf/lsm_file_protect.bpf.c` declared its own copy of the policy struct that was
+missing two fields, which meant `blockPtrace: true` had no effect and the setting
+that actually enabled ptrace blocking was `blockMaps`. Both sides now include
+`bpf/kernelseal_common.h`, and `make abi-check` fails the build if the layouts
+drift or if any BPF source redeclares a shared struct.
+
+Secret lifecycle:
+
+1. At rest - held in the source (Kubernetes Secret, file, or the agent's own
+   environment), never copied to a container filesystem.
+2. In transit - passed over a unix socket with mode `0660`. No temporary file,
+   no tmpfs mount, no `/proc` write.
+3. In use - present in the target process's environment, with reads of
+   `/proc/<pid>/environ`, `/proc/<pid>/mem` and `ptrace` refused by BPF-LSM.
+4. Disposal - the kernel reclaims the process's memory on exit, and the
+   `sched_process_exit` tracepoint plus a periodic reconciler remove the PID from
+   the protected set so a recycled PID does not inherit protection.
 
 ### RBAC Configuration
 
@@ -239,13 +324,21 @@ policy:
   kernelBinaryFilter: true                  # Efficient kernel-side filtering
 
 secrets:
-  - binary: "myapp"
-    envVars:
+  - name: myapp-secrets
+    selector:
+      binary: "myapp"                       # Matches what the shim will exec
+    secretRefs:
       - name: DB_PASSWORD
-        source: vault
-        path: secret/data/myapp/db
-        key: password
+        source:
+          # Written by a Vault agent sidecar into the KernelSeal container.
+          # Direct vaultRef is not yet implemented.
+          fileRef: /vault/secrets/db-password
 ```
+
+Note that `auditAll: true` logs every allowed access to a protected process as
+well as every denial. It is useful while establishing a baseline, but on a busy
+node it is a significant volume of events; leave it off unless you are actively
+investigating.
 
 ## Supply Chain Security
 
@@ -293,11 +386,18 @@ grype sbom:sbom.json
 KernelSeal provides audit logs for security monitoring:
 
 ```bash
-# Monitor for blocked access attempts
-kubectl logs -l app=kernelseal | grep "LSM BLOCK"
+# Blocked access attempts
+kubectl logs -l app=kernelseal | grep "\[LSM BLOCKED\]"
 
-# Monitor for policy violations
-kubectl logs -l app=kernelseal | grep "AUDIT"
+# Accesses observed but allowed (audit mode, or auditAll)
+kubectl logs -l app=kernelseal | grep "\[LSM AUDIT\]"
+
+# Refused secret requests, e.g. protection unavailable or a recycled PID
+kubectl logs -l app=kernelseal | grep "\[DENY\]"
+
+# Current counters
+kubectl exec -it <kernelseal-pod> -- \
+  wget -qO- localhost:9090/metrics | grep -E "kernelseal_(access|secrets)"
 ```
 
 ### Response Playbook
@@ -311,8 +411,10 @@ vault write -force secret/data/myapp/db password=$(openssl rand -base64 32)
 # Investigate: Check audit logs
 kubectl logs -l app=kernelseal --since=1h | grep -E "(BLOCK|AUDIT)"
 
-# Verify: Confirm new secrets are injected
-kubectl exec -it <pod> -- env | grep -v PASSWORD  # Should not show secrets
+# Verify: the application received the rotated values. Note that exec'ing into
+# the pod starts a new process, which is not the protected one, so its own
+# environment will not contain the secrets.
+kubectl logs -l app=kernelseal | grep "\[ISSUE\]"   # names only, never values
 ```
 
 **2. Unauthorized Access Attempt**
@@ -333,39 +435,66 @@ kubectl exec -it <pod> -- cat /proc/<pid>/cmdline
 ### Alerting Integration
 
 ```yaml
-# Example: Prometheus alert for blocked access
 groups:
   - name: kernelseal
     rules:
+      # Something is repeatedly trying to read protected process state.
       - alert: SecretAccessBlocked
-        expr: increase(kernelseal_lsm_blocks_total[5m]) > 10
+        expr: increase(kernelseal_access_blocked_total[5m]) > 10
         for: 1m
         labels:
           severity: warning
         annotations:
           summary: "Multiple secret access attempts blocked"
-          description: "{{ $value }} access attempts blocked in last 5 minutes"
+          description: "{{ $value }} access attempts blocked in the last 5 minutes"
+
+      # Enforcement is not actually active. In enforce mode this also means
+      # secret requests are being refused, so applications will fail to start.
+      - alert: KernelSealLSMNotLoaded
+        expr: kernelseal_lsm_loaded == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "KernelSeal is not enforcing protection"
+          description: "BPF-LSM is not loaded; check that the kernel was booted with bpf in its lsm= list"
+
+      # Applications are asking for secrets and not getting them.
+      - alert: KernelSealSecretsDenied
+        expr: increase(kernelseal_secrets_denied_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "KernelSeal refused a secret request"
+          description: "{{ $value }} requests refused in the last 5 minutes; check the agent logs for [DENY]"
 ```
 
 ## Hardening Checklist
 
 ### Pre-Deployment
 
+- [ ] Confirm the kernel lists `bpf` in `/sys/kernel/security/lsm`
 - [ ] Review and customize policy configuration
-- [ ] Configure binary allowlist for your applications
+- [ ] Configure the binary allowlist for your applications
 - [ ] Set up secret source (Vault, K8s Secrets, etc.)
+- [ ] Scope the socket volume to the pod that should receive those secrets
+- [ ] Wrap each application entrypoint with `kernelseal-exec`
+- [ ] Leave the shim's `-on-error` at its `fail` default so an application cannot
+      start unprotected
 - [ ] Configure RBAC with least privilege
 - [ ] Set up network policies
-- [ ] Enable audit logging
 - [ ] Configure alerting for security events
 
 ### Runtime
 
 - [ ] KernelSeal running in `enforce` mode
-- [ ] Read-only root filesystem enabled
-- [ ] Unnecessary capabilities dropped
+- [ ] `kernelseal_lsm_loaded` reporting 1
+- [ ] Readiness probe passing, which confirms enforcement is available
+- [ ] Read-only root filesystem enabled on application containers
+- [ ] Capabilities limited to `SYS_ADMIN`, `BPF`, `PERFMON`, `SYS_RESOURCE`
+- [ ] Socket mode left at `0660` with a shared `fsGroup`
 - [ ] Resource limits configured
-- [ ] Liveness/readiness probes configured
 - [ ] Secrets rotated on schedule
 
 ### Monitoring

@@ -1,5 +1,9 @@
 # KernelSeal Sidecar Deployment Template
-# This shows how to deploy KernelSeal as a sidecar alongside your application
+#
+# The application container's entrypoint is wrapped with kernelseal-exec, which
+# fetches secrets from the sidecar over a unix socket and then exec's the real
+# command. The application reads them as ordinary environment variables; nothing
+# is written to the filesystem.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -12,16 +16,16 @@ data:
     policy:
       mode: enforce          # disabled, audit, or enforce
       blockEnviron: true     # Block /proc/*/environ reads
-      blockMem: true         # Block /proc/*/mem reads  
+      blockMem: true         # Block /proc/*/mem reads
       blockMaps: false       # Block /proc/*/maps reads
       blockPtrace: true      # Block ptrace to protected processes
-      allowSelfRead: true    # Allow process to read its own /proc files
+      allowSelfRead: true    # Allow a process to read its own /proc files
       auditAll: false        # Audit all accesses, not just blocked ones
-    
+
     secrets:
       - name: myapp-secrets
         selector:
-          binary: "myapp"    # Inject into processes named "myapp"
+          binary: "myapp"    # Applies to a process exec'd as "myapp"
         secretRefs:
           - name: DATABASE_PASSWORD
             source:
@@ -33,7 +37,7 @@ data:
               secretKeyRef:
                 name: myapp-api-key
                 key: api-key
-    
+
     monitoring:
       enabled: true
       metricsPort: 9090
@@ -48,13 +52,39 @@ metadata:
     app: kernelseal-demo
     kernelseal.io/protected: "true"
 spec:
-  shareProcessNamespace: true  # Required for KernelSeal to access app processes
-  
+  # Required so the sidecar shares a PID namespace with the application and can
+  # protect its processes.
+  shareProcessNamespace: true
+
+  # Lets both containers share the socket directory when the app runs non-root.
+  securityContext:
+    fsGroup: 1000
+
+  initContainers:
+  # Copies the shim out of the KernelSeal image so the application image does not
+  # need to bundle it or be rebuilt.
+  - name: install-shim
+    image: your-registry/kernelseal:latest
+    command:
+      - /bin/sh
+      - -c
+      - cp /usr/local/bin/kernelseal-exec /kernelseal/kernelseal-exec
+    volumeMounts:
+    - name: kernelseal-bin
+      mountPath: /kernelseal
+
   containers:
-  # Your application container
+  # Application container. No secret volumes and no secret env vars.
   - name: myapp
     image: alpine:latest
-    command: ["sh", "-c", "echo 'App starting'; sleep 3600"]
+    # The original entrypoint becomes an argument to the shim. It waits for the
+    # sidecar, then replaces itself with the real process.
+    command:
+      - /kernelseal/kernelseal-exec
+      - --
+      - sh
+      - -c
+      - 'echo "App starting"; sleep 3600'
     resources:
       requests:
         memory: "64Mi"
@@ -62,25 +92,44 @@ spec:
       limits:
         memory: "128Mi"
         cpu: "200m"
-    # No secrets mounted here - KernelSeal injects them at runtime
     volumeMounts:
-    - name: kernelseal-secrets-runtime
-      mountPath: /run/kernelseal/secrets
+    - name: kernelseal-bin
+      mountPath: /kernelseal
       readOnly: true
+    - name: kernelseal-socket
+      mountPath: /run/kernelseal
 
-  # KernelSeal sidecar container
+  # KernelSeal sidecar
   - name: kernelseal
     image: your-registry/kernelseal:latest
     args:
       - "-config=/etc/kernelseal/config.yaml"
+      - "-exec-monitor=/bpf/exec_monitor.bpf.o"
+      - "-lsm=/bpf/lsm_file_protect.bpf.o"
     securityContext:
       privileged: true
       capabilities:
         add:
-          - SYS_ADMIN      # Required for BPF
-          - BPF            # Required for BPF
-          - SYS_PTRACE     # Required for process memory access
-          - PERFMON        # Required for perf events
+          - SYS_ADMIN      # Required to load BPF programs
+          - BPF            # Required to load BPF programs
+          - PERFMON        # Required to attach tracepoints
+          - SYS_RESOURCE   # Required to raise RLIMIT_MEMLOCK for BPF maps
+    ports:
+    - name: metrics
+      containerPort: 9090
+      protocol: TCP
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: metrics
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: metrics
+      initialDelaySeconds: 5
+      periodSeconds: 10
     resources:
       requests:
         memory: "64Mi"
@@ -92,13 +141,10 @@ spec:
     - name: kernelseal-config
       mountPath: /etc/kernelseal
       readOnly: true
-    - name: kernelseal-secrets-runtime
-      mountPath: /run/kernelseal/secrets
+    - name: kernelseal-socket
+      mountPath: /run/kernelseal
     - name: kernelseal-secrets-source
       mountPath: /var/run/secrets/kernelseal
-      readOnly: true
-    - name: sys-kernel-debug
-      mountPath: /sys/kernel/debug
       readOnly: true
     - name: sys-kernel-btf
       mountPath: /sys/kernel/btf
@@ -110,10 +156,14 @@ spec:
   - name: kernelseal-config
     configMap:
       name: kernelseal-config
-  - name: kernelseal-secrets-runtime
+  # Holds the shim binary, shared from the init container.
+  - name: kernelseal-bin
+    emptyDir: {}
+  # Holds the delivery socket. Memory-backed so it never touches disk.
+  - name: kernelseal-socket
     emptyDir:
       medium: Memory
-      sizeLimit: 10Mi
+      sizeLimit: 1Mi
   - name: kernelseal-secrets-source
     projected:
       sources:
@@ -127,10 +177,6 @@ spec:
           items:
           - key: api-key
             path: myapp-api-key/api-key
-  - name: sys-kernel-debug
-    hostPath:
-      path: /sys/kernel/debug
-      type: Directory
   - name: sys-kernel-btf
     hostPath:
       path: /sys/kernel/btf

@@ -1,6 +1,7 @@
 package bpf
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -85,12 +86,37 @@ func TestManager_AllowPID_NoLSM(t *testing.T) {
 	}
 }
 
+// ProtectPID must report failure when there is no LSM to protect with. Silently
+// succeeding would let the socket server tell a caller its secrets are guarded
+// when nothing is enforcing that.
 func TestManager_ProtectPID_NoLSM(t *testing.T) {
 	mgr := NewManager()
 
 	err := mgr.ProtectPID(12345)
+	if !errors.Is(err, ErrLSMUnavailable) {
+		t.Errorf("ProtectPID error = %v, want ErrLSMUnavailable", err)
+	}
+}
+
+func TestManager_IsLSMLoaded_NoLSM(t *testing.T) {
+	if NewManager().IsLSMLoaded() {
+		t.Error("IsLSMLoaded should be false before LoadLSM")
+	}
+}
+
+func TestManager_TrackPID_NoExecMonitor(t *testing.T) {
+	if err := NewManager().TrackPID(12345); err == nil {
+		t.Error("TrackPID should error when the exec monitor is not loaded")
+	}
+}
+
+func TestManager_ListProtectedPIDs_NoLSM(t *testing.T) {
+	pids, err := NewManager().ListProtectedPIDs()
 	if err != nil {
-		t.Errorf("ProtectPID should not error when LSM not loaded: %v", err)
+		t.Errorf("ListProtectedPIDs should not error when LSM not loaded: %v", err)
+	}
+	if len(pids) != 0 {
+		t.Errorf("ListProtectedPIDs = %v, want empty", pids)
 	}
 }
 

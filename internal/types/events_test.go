@@ -1,6 +1,8 @@
 package types
 
 import (
+	"bytes"
+	"encoding/binary"
 	"testing"
 )
 
@@ -215,42 +217,31 @@ func TestCStringToGo(t *testing.T) {
 	}
 }
 
+// TestPolicyConfig_StructLayout asserts the exact byte sequence handed to the
+// BPF policy map. Each field must land in the slot the C struct reads it from;
+// setting a field and reading it back in Go would pass even when the kernel
+// sees something completely different.
 func TestPolicyConfig_StructLayout(t *testing.T) {
+	// A distinct value per field so a shifted layout cannot accidentally match.
 	policy := PolicyConfig{
-		EnforceMode:   ModeEnforce,
-		BlockEnviron:  1,
-		BlockMem:      1,
-		BlockMaps:     0,
-		BlockPtrace:   1,
-		AllowSelfRead: 1,
-		AuditAll:      0,
-		Reserved:      0,
+		EnforceMode:   ModeAudit, // 1
+		BlockEnviron:  2,
+		BlockMem:      3,
+		BlockMaps:     4,
+		BlockPtrace:   5,
+		AllowSelfRead: 6,
+		AuditAll:      7,
+		Reserved:      8,
 	}
 
-	// Verify all fields are set correctly
-	if policy.EnforceMode != ModeEnforce {
-		t.Error("EnforceMode not set correctly")
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, policy); err != nil {
+		t.Fatalf("binary.Write failed: %v", err)
 	}
-	if policy.BlockEnviron != 1 {
-		t.Error("BlockEnviron not set correctly")
-	}
-	if policy.BlockMem != 1 {
-		t.Error("BlockMem not set correctly")
-	}
-	if policy.BlockMaps != 0 {
-		t.Error("BlockMaps not set correctly")
-	}
-	if policy.BlockPtrace != 1 {
-		t.Error("BlockPtrace not set correctly")
-	}
-	if policy.AllowSelfRead != 1 {
-		t.Error("AllowSelfRead not set correctly")
-	}
-	if policy.AuditAll != 0 {
-		t.Error("AuditAll not set correctly")
-	}
-	if policy.Reserved != 0 {
-		t.Error("Reserved not set correctly")
+
+	want := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	if got := buf.Bytes(); !bytes.Equal(got, want) {
+		t.Errorf("policy wire bytes = %v, want %v", got, want)
 	}
 }
 
