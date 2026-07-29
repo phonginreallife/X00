@@ -247,13 +247,39 @@ int handle_sched_process_exec(void *ctx) {
     return 0;
 }
 
+// Report whether the currently exiting task is the last live thread of its
+// thread group. do_exit() decrements signal->live before firing
+// sched_process_exit, so a zero count here means the whole process is going away
+// rather than a single thread.
+static __always_inline int thread_group_dead(void) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct signal_struct *signal;
+
+    bpf_core_read(&signal, sizeof(signal), &task->signal);
+    if (!signal)
+        return 1; // cannot tell; reporting the exit beats leaking protection
+
+    int live = 0;
+    bpf_core_read(&live, sizeof(live), &signal->live.counter);
+    return live == 0;
+}
+
 // Tracepoint: sched_process_exit - Called when a process exits
 SEC("tracepoint/sched/sched_process_exit")
 int handle_sched_process_exit(void *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = pid_tgid >> 32;  // thread group leader == userspace PID
     __u32 tid = (__u32)pid_tgid; // kernel thread id
-    
+
+    // This tracepoint fires for every thread, not just the last one out of a
+    // thread group, and everything here is keyed by tgid. Reporting a sibling
+    // thread's exit as a process exit makes user space release protection while
+    // the process is still running - which is exactly what a multithreaded shim
+    // does when it execs its target, since execve zaps the sibling threads
+    // first. Only the final thread of the group is a real process exit.
+    if (!thread_group_dead())
+        return 0;
+
     // Only report if this was a tracked PID
     __u64 *existing = bpf_map_lookup_elem(&seen_pids, &pid);
     if (!existing)

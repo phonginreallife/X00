@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-07-29
+
+### Fixed
+
+- Exec monitor no longer reports sibling thread exits as process exits. When a multithreaded shim execs its target, `sched_process_exit` used to fire for zapped Go runtime threads and user space dropped BPF protection while the target was still running and held secrets.
+- Agent exit handler verifies `/proc/<pid>` still exists before unprotecting, as a user-space backstop for any misreported exit events.
+
+### Added
+
+- Integration tests (`test/integration/shim_protection_test.go`) that reproduce the protection leak with the real shim and assert environ reads return `EPERM` after exec.
+
 ## [3.0.0] - 2026-07-29
 
 ### Added
@@ -47,6 +58,7 @@ Maintenance and CI fixes for the 2.x line.
 
 KernelSeal rebrand, inline secret values in config, and expanded security documentation.
 
+[3.0.1]: https://github.com/phonginreallife/kernelseal/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/phonginreallife/kernelseal/compare/v2.0.3...v3.0.0
 [2.0.3]: https://github.com/phonginreallife/kernelseal/compare/v2.0.0...v2.0.3
 [2.0.0]: https://github.com/phonginreallife/kernelseal/releases/tag/v2.0.0
