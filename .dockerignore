@@ -7,5 +7,7 @@ coverage.out
 demo/
 test/
 deploy/
-examples/
 scripts/
+# Default config baked into the runtime image (see Dockerfile).
+examples/*
+!examples/config.yaml
