@@ -17,8 +17,10 @@
 
 | Version | Supported | Notes |
 |---------|-----------|-------|
-| 1.x.x   | Yes | Current stable release |
-| 0.x.x   | Limited | Security fixes only |
+| 3.x.x   | Yes | Current stable release |
+| 2.x.x   | No | Upgrade to 3.x; 2.x used the removed memory injector |
+| 1.x.x   | No | Superseded |
+| 0.x.x   | No | Superseded |
 
 We recommend always running the latest stable version.
 

@@ -88,6 +88,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare BPF headers for Docker
+        run: |
+          if [ ! -f bpf/vmlinux.h ]; then
+            /usr/local/bin/bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          fi
+          ls -la bpf/vmlinux.h
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -106,7 +113,8 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
-          generate_release_notes: true
+          body_path: .github/release-notes/${{ github.ref_name }}.md
+          generate_release_notes: false
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
         env:
