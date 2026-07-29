@@ -252,15 +252,12 @@ func handleExecEvent(event *types.ExecEvent, bpfMgr *bpf.Manager, collector *met
 			event.PID, event.PPID, event.GetComm(), event.GetFilename(), event.CgroupID)
 
 	case types.EventExit:
-		// Never take a reported exit at face value: dropping protection for a
-		// process that is still running silently exposes its secrets, whereas
-		// keeping a stale entry is caught by the periodic reconcile sweep. The
-		// kernel side already filters out non-final thread exits; this is the
-		// backstop for any exit report that is wrong anyway.
-		if reconcile.ProcessAlive(event.PID) {
-			logging.Warnf("[WARN] Ignoring exit event for PID %d: process is still running", event.PID)
-			return
-		}
+		// This must stay an unconditional release. Sanity-checking the PID
+		// against /proc here does not work: sched_process_exit fires from inside
+		// do_exit(), so the task still has a /proc entry when the event arrives
+		// and every real exit would look like a live process. Correctness relies
+		// on the kernel side reporting only the final thread of a group, with the
+		// reconcile sweep as the net for exits that are never reported at all.
 		if err := bpfMgr.UnprotectPID(event.PID); err != nil {
 			logging.Warnf("[WARN] Failed to release protection for PID %d: %v", event.PID, err)
 		}

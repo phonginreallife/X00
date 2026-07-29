@@ -161,11 +161,11 @@ func TestStop_Idempotent(t *testing.T) {
 }
 
 func TestProcessAlive(t *testing.T) {
-	if !ProcessAlive(uint32(os.Getpid())) {
-		t.Error("ProcessAlive returned false for the current process")
+	if !processAlive(uint32(os.Getpid())) {
+		t.Error("processAlive returned false for the current process")
 	}
 	// PID 0 is never a userspace process, so /proc/0 does not exist.
-	if ProcessAlive(0) {
-		t.Error("ProcessAlive returned true for pid 0")
+	if processAlive(0) {
+		t.Error("processAlive returned true for pid 0")
 	}
 }

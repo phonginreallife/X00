@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.2] - 2026-07-29
+
+### Fixed
+
+- Reverted the 3.0.1 user-space exit check. `sched_process_exit` fires from inside `do_exit()`, so the exiting task still has a `/proc/<pid>` entry when the event reaches user space. The check therefore rejected *every* genuine exit, logging `Ignoring exit event for PID N: process is still running` for each one and leaving protection release entirely to the 30s reconcile sweep. The exit handler releases protection unconditionally again; the kernel-side filter added in 3.0.1 is what makes that safe.
+
+### Note
+
+3.0.1 does not leak secrets — the reverted check erred toward keeping protection — but it delays cleanup and floods the log. Upgrade to 3.0.2.
+
 ## [3.0.1] - 2026-07-29
 
 ### Fixed

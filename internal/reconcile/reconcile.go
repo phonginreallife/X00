@@ -50,7 +50,7 @@ func New(store Store, interval time.Duration) *Reconciler {
 	return &Reconciler{
 		store:    store,
 		interval: interval,
-		alive:    ProcessAlive,
+		alive:    processAlive,
 		stopCh:   make(chan struct{}),
 	}
 }
@@ -116,10 +116,13 @@ func (r *Reconciler) Sweep() (int, error) {
 	return removed, nil
 }
 
-// ProcessAlive reports whether a PID currently exists. The exit-event path uses
-// it as a second opinion before dropping protection, so it lives here next to
-// the sweep that has the same job.
-func ProcessAlive(pid uint32) bool {
+// processAlive reports whether a PID currently exists.
+//
+// This is only sound on the sweep's timescale. It cannot be reused to validate
+// an exit event: sched_process_exit fires from inside do_exit(), so the task
+// still has a /proc entry at that moment and every genuine exit would look like
+// a live process.
+func processAlive(pid uint32) bool {
 	_, err := os.Stat("/proc/" + strconv.FormatUint(uint64(pid), 10))
 	return err == nil
 }

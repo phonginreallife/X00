@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"kernelseal/internal/bpf"
-	"kernelseal/internal/reconcile"
 	"kernelseal/internal/secrets"
 	"kernelseal/internal/types"
 )
@@ -185,13 +184,12 @@ func TestShimDelivery_ProtectionSurvivesExec(t *testing.T) {
 		t.Fatalf("ConfigurePolicy: %v", err)
 	}
 
-	// Mirror the agent's exit handling, including its refusal to act on an exit
-	// report for a process that is demonstrably still alive.
+	// Mirror the agent's exit handling exactly: an exit event releases protection
+	// unconditionally. Anything softer here would hide the very regression this
+	// test exists to catch, since a user-space liveness check cannot distinguish a
+	// misreported thread exit from a real one.
 	mgr.SetExecHandler(func(event *types.ExecEvent) {
 		if event.EventType != types.EventExit {
-			return
-		}
-		if reconcile.ProcessAlive(event.PID) {
 			return
 		}
 		if err := mgr.UnprotectPID(event.PID); err != nil {
