@@ -1,0 +1,11 @@
+# Trim the build context. Never exclude bpf/vmlinux.h, bpf source, cmd/, or go.mod.
+.git
+.github
+build/
+dist/
+coverage.out
+demo/
+test/
+deploy/
+examples/
+scripts/

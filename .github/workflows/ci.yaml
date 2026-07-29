@@ -225,11 +225,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download BPF objects
-        uses: actions/download-artifact@v4
-        with:
-          name: bpf-objects
-          path: bpf/
+      - name: Prepare BPF headers for Docker
+        run: |
+          bash scripts/ci-install-bpf-deps.sh
+          sudo /usr/local/bin/bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          ls -la bpf/vmlinux.h
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
