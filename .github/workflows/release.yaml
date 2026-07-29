@@ -32,32 +32,7 @@ jobs:
           cache: true
 
       - name: Install BPF build dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          KVER="$(uname -r)"
-          PKGS=(clang llvm libbpf-dev linux-tools-common "linux-headers-${KVER}" make)
-          for pkg in \
-            "linux-tools-${KVER}" \
-            "linux-cloud-tools-${KVER}" \
-            linux-tools-azure \
-            linux-cloud-tools-azure; do
-            if apt-cache show "$pkg" >/dev/null 2>&1; then
-              PKGS+=("$pkg")
-            fi
-          done
-          sudo apt-get install -y "${PKGS[@]}"
-
-          for candidate in \
-            "/usr/lib/linux-tools/${KVER}/bpftool" \
-            "/usr/lib/linux-tools/${KVER%-azure}/bpftool"; do
-            if [ -x "$candidate" ]; then
-              sudo ln -sf "$candidate" /usr/local/bin/bpftool
-              break
-            fi
-          done
-
-          /usr/local/bin/bpftool version
+        run: bash scripts/ci-install-bpf-deps.sh "linux-headers-$(uname -r)" make
 
       - name: Generate vmlinux.h
         run: |
