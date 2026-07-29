@@ -1,0 +1,13 @@
+{
+  "name": "kernelseal-node-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo HTTP service whose secrets are delivered by KernelSeal and guarded by BPF-LSM",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

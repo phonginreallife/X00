@@ -91,6 +91,14 @@ func main() {
 
 	env := mergeEnv(os.Environ(), resp.Env)
 
+	// The agent served the request but wants the operator to know something, such
+	// as secrets that are configured but unreadable. This has to be printed even
+	// when no secrets arrived at all, which is exactly the case the protection
+	// warning below cannot cover.
+	if resp.Warning != "" {
+		warnf("kernelseal-exec: warning: %s\n", resp.Warning)
+	}
+
 	if len(resp.Env) > 0 && !resp.Protected {
 		// Worth saying out loud: the secrets are in the environment but the
 		// kernel is not refusing reads of /proc/<pid>/environ.

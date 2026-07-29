@@ -121,14 +121,22 @@ This produces two binaries:
 
 ```bash
 # 1. Start the agent with the secret in its own environment.
+#    Pass the value on the sudo command line rather than exporting it and using
+#    sudo -E: many sudoers configurations reject -E outright with "preserving the
+#    entire environment is not supported", and the agent then starts with the
+#    source variable unset. It registers 0 secrets, the shim is told the binary
+#    has nothing bound to it, and nothing is protected.
 #    -socket-group hands the socket to your group so the shim can reach it: the
 #    agent runs as root, and a 0660 socket would otherwise be root-only.
-export MY_SECRET_VALUE="super-secret-value"
-sudo -E ./build/kernelseal \
+sudo MY_SECRET_VALUE="super-secret-value" ./build/kernelseal \
   -config examples/config.yaml \
   -exec-monitor bpf/exec_monitor.bpf.o \
   -lsm bpf/lsm_file_protect.bpf.o \
   -socket-group "$(id -gn)"
+
+# Check the log says "[REGISTER] 2 secrets registered for binary: sleep".
+# A 0 there means the secret sources did not resolve, and step 3 will succeed
+# rather than being denied.
 
 # 2. In another shell, start a process through the shim
 ./build/kernelseal-exec -- sleep 300 &

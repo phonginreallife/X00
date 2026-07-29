@@ -42,4 +42,10 @@ type Response struct {
 
 	// Error describes why OK is false.
 	Error string `json:"error,omitempty"`
+
+	// Warning describes a served request that the operator should still know
+	// about, such as secrets that were configured but could not be resolved. The
+	// shim prints it on stderr. Kept separate from Error so a degraded start is
+	// visible without being treated as a failure.
+	Warning string `json:"warning,omitempty"`
 }

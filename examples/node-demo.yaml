@@ -1,0 +1,62 @@
+# KernelSeal configuration for the Node demo application.
+#
+# Used by scripts/run-node-demo.sh, which sets the source variables and creates
+# the API key file before starting the agent.
+#
+# Unlike examples/config.yaml, every source here resolves on a plain host: the
+# fileRef points at a path the script creates rather than at a Vault agent mount
+# that only exists in Kubernetes. A source that cannot be resolved registers zero
+# secrets for the binary, and a binary with zero secrets is never marked
+# protected - which looks identical to enforcement being broken.
+
+version: v1
+
+policy:
+  mode: enforce
+  blockEnviron: true
+  blockMem: true
+
+  # The demo asserts that /proc/<pid>/maps is guarded too, so unlike the default
+  # config this is on. Leave it off if you need a debugger attached.
+  blockMaps: true
+
+  blockPtrace: true
+
+  # The app reads its own environment to report secret fingerprints, so it must
+  # be allowed to inspect itself.
+  allowSelfRead: true
+
+  auditAll: false
+  kernelBinaryFilter: true
+
+secrets:
+  - name: node-demo
+    selector:
+      binary: "node"
+    secretRefs:
+      # Signing key for the tokens the app issues.
+      - name: JWT_SECRET
+        source:
+          envRef: KERNELSEAL_DEMO_JWT_SECRET
+
+      # Read from a file, the way a Vault agent or a mounted Kubernetes secret
+      # would supply it. scripts/run-node-demo.sh writes this path.
+      - name: API_KEY
+        source:
+          fileRef: "/run/kernelseal-demo/api-key"
+
+      - name: DATABASE_URL
+        source:
+          envRef: KERNELSEAL_DEMO_DATABASE_URL
+
+monitoring:
+  enabled: true
+
+  # Deliberately not 9090: that is the port examples/config.yaml uses, and a
+  # second agent started while the first is running would otherwise only report
+  # "address already in use" for its metrics listener and keep going, leaving two
+  # agents attached with separate protected-PID maps.
+  metricsPort: 9099
+
+  logLevel: info
+  auditLog: /var/log/kernelseal/audit.log

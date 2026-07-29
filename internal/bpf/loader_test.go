@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"kernelseal/internal/types"
 )
@@ -214,5 +215,42 @@ func BenchmarkManager_SetLSMHandler(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		mgr.SetLSMHandler(handler)
+	}
+}
+
+// Stop must be safe to call twice. main calls it during shutdown and tests call
+// it from cleanup; before stopOnce, the second close(stopCh) panicked.
+func TestManager_StopIsIdempotent(t *testing.T) {
+	m := NewManager()
+
+	m.Stop()
+	m.Stop()
+}
+
+// Stop must return even when a ring buffer goroutine never does. An unbounded
+// wait here is what leaves the agent ignoring SIGTERM with no way to say why.
+func TestManager_StopDoesNotWaitForever(t *testing.T) {
+	m := NewManager()
+
+	// Stand in for a goroutine wedged in Read(): registered with the WaitGroup
+	// and never returning until the test releases it.
+	release := make(chan struct{})
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		<-release
+	}()
+	t.Cleanup(func() { close(release) })
+
+	done := make(chan struct{})
+	go func() {
+		m.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(shutdownTimeout + 5*time.Second):
+		t.Fatalf("Stop did not return within %s of its own timeout", shutdownTimeout)
 	}
 }

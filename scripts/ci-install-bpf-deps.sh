@@ -78,7 +78,12 @@ resolve_bpftool() {
     return 0
   fi
 
-  echo "::error::bpftool not found for kernel ${kver} after installing: ${TOOL_PKGS[*]}"
+  # Deliberately not ::error:: - this function is called again after installing a
+  # fallback tools package, and that retry usually succeeds. Annotating the run
+  # as failed here made every green release look broken, which is a good way to
+  # train yourself to ignore real errors. Only the caller's final failure is an
+  # error.
+  echo "::warning::bpftool not usable for kernel ${kver} after installing: ${TOOL_PKGS[*]}; trying fallbacks"
   ls -la /usr/lib/linux-tools/ 2>/dev/null || true
   find /usr/lib -name 'bpftool*' -ls 2>/dev/null || true
   return 1

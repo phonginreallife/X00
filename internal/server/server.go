@@ -35,6 +35,11 @@ const handshakeTimeout = 10 * time.Second
 // Resolver reports which secrets apply to a process.
 type Resolver interface {
 	Lookup(binaryName string, cgroupID uint64) []secrets.Secret
+
+	// Unresolved names the secrets bound to a binary whose source could not be
+	// read, which is what separates a misconfigured binding from a binary that
+	// has no secrets at all.
+	Unresolved(binaryName string) []string
 }
 
 // Protector manages kernel-side protection for a PID.
@@ -288,11 +293,38 @@ func (s *Server) handle(cred *syscall.Ucred, req protocol.Request) protocol.Resp
 	}
 
 	matched := s.resolver.Lookup(binaryName, 0)
-	if len(matched) == 0 {
+	unresolved := s.resolver.Unresolved(binaryName)
+
+	if len(matched) == 0 && len(unresolved) == 0 {
 		// Not an error, and not worth a line at the default level: the shim may
 		// front a binary that has no secrets bound to it.
 		logging.Debugf("[SHIM] No secrets bound to %q, allowing exec unchanged (%s)", binaryName, peer)
 		return protocol.Response{OK: true, Protected: false}
+	}
+
+	// The configuration binds secrets to this binary, but none of them could be
+	// read. Returning the "no secrets bound" response here would start the
+	// process with no secrets AND no kernel protection, silently, which is how a
+	// single typo in a fileRef turns enforce mode into no enforcement at all.
+	if len(matched) == 0 {
+		if s.cfg.RequireProtection {
+			s.denied(pid, "all secrets unresolved")
+			log.Printf("[DENY] Refusing to start %q: all %d configured secret(s) failed to resolve %v (%s)",
+				binaryName, len(unresolved), unresolved, peer)
+			return protocol.Response{
+				Error: fmt.Sprintf("all %d configured secret(s) for %q failed to resolve: %v",
+					len(unresolved), binaryName, unresolved),
+			}
+		}
+
+		log.Printf("[WARN] Starting %q unprotected: all %d configured secret(s) failed to resolve %v (%s)",
+			binaryName, len(unresolved), unresolved, peer)
+		return protocol.Response{
+			OK:        true,
+			Protected: false,
+			Warning: fmt.Sprintf("all %d configured secret(s) failed to resolve: %v",
+				len(unresolved), unresolved),
+		}
 	}
 
 	// Snapshot the caller's identity so PID recycling during the handshake is
@@ -348,7 +380,18 @@ func (s *Server) handle(cred *syscall.Ucred, req protocol.Request) protocol.Resp
 		s.onIssued(pid, names)
 	}
 
-	return protocol.Response{OK: true, Env: env, Protected: protected}
+	// A partial delivery is protected and usable, so it is not a denial - but the
+	// application is starting without secrets its configuration says it needs,
+	// and it will most likely fail somewhere less obvious.
+	var warning string
+	if len(unresolved) > 0 {
+		log.Printf("[WARN] %q started with %d unresolved secret(s): %v",
+			binaryName, len(unresolved), unresolved)
+		warning = fmt.Sprintf("%d configured secret(s) failed to resolve: %v",
+			len(unresolved), unresolved)
+	}
+
+	return protocol.Response{OK: true, Env: env, Protected: protected, Warning: warning}
 }
 
 func (s *Server) denied(pid uint32, reason string) {

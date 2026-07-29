@@ -23,14 +23,24 @@ type Secret struct {
 type Registry struct {
 	byBinary map[string][]Secret
 	byCgroup map[uint64][]Secret
-	mu       sync.RWMutex
+
+	// unresolved records secrets that the configuration binds to a binary but
+	// whose source could not be read. Without this, a binding whose every source
+	// failed is indistinguishable from a binary with no secrets configured at
+	// all, and the delivery path treats the two identically: it hands out
+	// nothing, installs no protection, and says nothing. A typo in a fileRef
+	// then silently downgrades an application to zero protection.
+	unresolved map[string][]string
+
+	mu sync.RWMutex
 }
 
 // NewRegistry creates an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		byBinary: make(map[string][]Secret),
-		byCgroup: make(map[uint64][]Secret),
+		byBinary:   make(map[string][]Secret),
+		byCgroup:   make(map[uint64][]Secret),
+		unresolved: make(map[string][]string),
 	}
 }
 
@@ -41,6 +51,31 @@ func (r *Registry) RegisterForBinary(binaryName string, s []Secret) {
 	defer r.mu.Unlock()
 	r.byBinary[binaryName] = s
 	log.Printf("[REGISTER] %d secrets registered for binary: %s", len(s), binaryName)
+}
+
+// SetUnresolved records which secrets are configured for a binary but could not
+// be resolved. Pass nil to clear a previous record, so a reload that fixes the
+// source does not leave a stale complaint behind.
+func (r *Registry) SetUnresolved(binaryName string, names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(names) == 0 {
+		delete(r.unresolved, binaryName)
+		return
+	}
+	r.unresolved[binaryName] = append([]string(nil), names...)
+}
+
+// Unresolved returns the names of secrets bound to a binary whose source could
+// not be read. A non-empty result means the configuration intended to protect
+// this binary, so delivering nothing is a misconfiguration rather than a binary
+// that simply has no secrets.
+func (r *Registry) Unresolved(binaryName string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return append([]string(nil), r.unresolved[binaryName]...)
 }
 
 // RegisterForCgroup associates secrets with a cgroup ID.

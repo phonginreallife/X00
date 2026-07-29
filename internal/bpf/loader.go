@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -30,9 +31,10 @@ type Manager struct {
 	execHandler func(*types.ExecEvent)
 	lsmHandler  func(*types.LSMEvent)
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
-	mu     sync.RWMutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
+	mu       sync.RWMutex
 }
 
 // execObjects holds the exec monitor BPF objects
@@ -435,8 +437,20 @@ func (m *Manager) Start() {
 	}
 }
 
-// Stop stops all BPF event processing and cleans up
+// shutdownTimeout bounds how long Stop waits for the ring buffer goroutines.
+//
+// An unbounded wait here is the difference between a daemon that stops and one
+// that has to be SIGKILLed: main has already returned from its signal handler by
+// this point, so a goroutine that never returns leaves the process ignoring every
+// later SIGTERM with no way to report why.
+const shutdownTimeout = 5 * time.Second
+
+// Stop stops all BPF event processing and cleans up. Safe to call more than once.
 func (m *Manager) Stop() {
+	m.stopOnce.Do(m.stop)
+}
+
+func (m *Manager) stop() {
 	// Signal goroutines to stop
 	close(m.stopCh)
 
@@ -450,8 +464,22 @@ func (m *Manager) Stop() {
 		m.lsmReader.Close()
 	}
 
-	// Now wait for goroutines to finish (they will exit on ErrClosed)
-	m.wg.Wait()
+	// Wait for the goroutines to finish (they exit on ErrClosed), but never
+	// forever. Detaching the links below matters more than a clean goroutine
+	// exit: leaving them attached keeps stale BPF programs enforcing against
+	// PIDs this agent no longer tracks.
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(shutdownTimeout):
+		log.Printf("[WARN] BPF event goroutines did not exit within %s, detaching anyway",
+			shutdownTimeout)
+	}
 
 	// Close links
 	for _, l := range m.execLinks {

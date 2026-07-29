@@ -149,3 +149,31 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestRegistry_UnresolvedRoundTrip(t *testing.T) {
+	r := NewRegistry()
+
+	if got := r.Unresolved("node"); len(got) != 0 {
+		t.Errorf("Unresolved on a fresh registry = %v, want empty", got)
+	}
+
+	r.SetUnresolved("node", []string{"JWT_SECRET", "API_KEY"})
+	got := r.Unresolved("node")
+	if len(got) != 2 || got[0] != "JWT_SECRET" || got[1] != "API_KEY" {
+		t.Errorf("Unresolved = %v, want [JWT_SECRET API_KEY]", got)
+	}
+
+	// The result must be a copy: a caller mutating it must not corrupt the
+	// registry's own record.
+	got[0] = "mutated"
+	if r.Unresolved("node")[0] != "JWT_SECRET" {
+		t.Error("Unresolved returned an aliased slice")
+	}
+
+	// A reload that fixes the source clears the record rather than leaving the
+	// binary permanently flagged.
+	r.SetUnresolved("node", nil)
+	if got := r.Unresolved("node"); len(got) != 0 {
+		t.Errorf("Unresolved after clearing = %v, want empty", got)
+	}
+}

@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-07-29
+
+### Changed
+
+- **Behavior change, fail-closed.** A binary whose configured secrets *all* fail to resolve is now refused in enforce mode instead of being started with no secrets and no protection. Previously this was indistinguishable from a binary with no secrets configured: the agent returned its "nothing bound" response, never called `ProtectPID`, and logged nothing at request time, so a single typo'd `fileRef` silently reduced an application to zero protection. The denial names the unresolved secrets. If you depend on such a process starting anyway, fix the source or use `mode: audit`.
+
+### Added
+
+- `warning` field in the agent's response, printed by the shim on stderr. A partially-resolved or unprotected start is now visible at exec time rather than only in the agent's startup log.
+- Node demo application (`demo/node-app/`), a config whose sources resolve on a plain host (`examples/node-demo.yaml`), and an end-to-end test (`scripts/run-node-demo.sh`). The test asserts secret delivery and use, self-read, `EPERM` on environ/mem/maps from outside, and — unlike a `sleep` target — that protection survives OS threads exiting *inside* the running process, which is the condition behind the 3.0.0 leak.
+
+### Fixed
+
+- Agent shutdown no longer hangs. `bpf.Manager.Stop` waited on its ring-buffer goroutines with no timeout, so a goroutine that failed to return left the process ignoring every subsequent SIGTERM and needing SIGKILL. The wait is bounded and `Stop` is now idempotent.
+- CI no longer annotates successful runs with `::error::bpftool not found`. That came from the first of several bpftool resolution attempts, which the later fallback normally recovers from; it is a warning now, with the error reserved for genuine failure.
+- `README.md` no longer instructs `sudo -E` for the local walkthrough. Many sudoers configurations reject it outright, leaving the agent without its source variables — registering 0 secrets and protecting nothing.
+
 ## [3.0.2] - 2026-07-29
 
 ### Fixed

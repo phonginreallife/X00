@@ -271,11 +271,13 @@ func (pm *PolicyManager) loadSecrets() {
 
 	for _, binding := range pm.config.Secrets {
 		secretsList := make([]secrets.Secret, 0, len(binding.SecretRefs))
+		var unresolved []string
 
 		for _, ref := range binding.SecretRefs {
 			value, err := pm.resolveSecretValue(ref.Source)
 			if err != nil {
 				log.Printf("[WARN] Failed to resolve secret %s: %v", ref.Name, err)
+				unresolved = append(unresolved, ref.Name)
 				continue
 			}
 
@@ -288,6 +290,21 @@ func (pm *PolicyManager) loadSecrets() {
 		// Register secrets based on selector
 		if binding.Selector.Binary != "" {
 			pm.registry.RegisterForBinary(binding.Selector.Binary, secretsList)
+
+			// Remember the failures too. The delivery path needs them to tell a
+			// misconfigured binding apart from a binary that has no secrets, and
+			// a startup [WARN] is easy to miss on a busy host.
+			pm.registry.SetUnresolved(binding.Selector.Binary, unresolved)
+
+			if len(unresolved) > 0 {
+				log.Printf("[WARN] Binary %q has %d unresolved secret(s): %v",
+					binding.Selector.Binary, len(unresolved), unresolved)
+				if len(secretsList) == 0 {
+					log.Printf("[WARN]   every secret for %q failed to resolve, so it will "+
+						"not be protected; requests will be refused in enforce mode",
+						binding.Selector.Binary)
+				}
+			}
 		}
 
 		// TODO: Handle other selector types (container, labels, namespace, cgroupPath)
