@@ -125,56 +125,33 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
 
-          # Try a plain install first
-          install_pkgs() {
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              clang llvm libbpf-dev bpftool
-          }
-
-          # Retry helper (3 tries with backoff)
-          retry() {
-            local n=0
-            local max=3
-            local delay=2
-            until "$@"; do
-              n=$((n+1))
-              if [ $n -ge $max ]; then
-                return 1
-              fi
-              echo "Command failed, retrying in $delay s... ($n/$max)"
-              sleep $delay
-              delay=$((delay*2))
-            done
-          }
-
-          if retry install_pkgs; then
-            echo "Packages installed successfully."
-          else
-            echo "Initial install failed; trying linux-tools fallbacks for kernel compatibility..."
-
-            # Try kernel-specific linux-tools (common requirement for bpftool)
-            if apt-cache policy "linux-tools-$(uname -r)" | grep -q Candidate; then
-              echo "Found linux-tools-$(uname -r) in apt cache; installing it."
-              sudo apt-get install -y "linux-tools-$(uname -r)"
-            elif apt-cache policy linux-tools-azure | grep -q Candidate; then
-              echo "Found linux-tools-azure; installing it."
-              sudo apt-get install -y linux-tools-azure
-            elif apt-cache policy linux-cloud-tools-azure | grep -q Candidate; then
-              echo "Found linux-cloud-tools-azure; installing it."
-              sudo apt-get install -y linux-cloud-tools-azure
-            else
-              echo "No linux-tools variant found; continuing to try installing base packages."
-            fi
-
-            # Try installing base packages again (will fail if really missing)
-            retry install_pkgs
+          KVER="$(uname -r)"
+          # bpftool is a virtual apt package on Ubuntu; linux-tools-common
+          # provides /usr/sbin/bpftool. Pair it with the kernel-matched tools
+          # package so Azure runners get a compatible binary.
+          PKGS=(clang llvm libbpf-dev linux-tools-common)
+          if apt-cache show "linux-tools-${KVER}" >/dev/null 2>&1; then
+            PKGS+=("linux-tools-${KVER}")
+          elif apt-cache show linux-tools-azure >/dev/null 2>&1; then
+            PKGS+=(linux-tools-azure)
           fi
 
-          # Verify bpftool exists
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${PKGS[@]}"
+
+          # Some images only expose bpftool under /usr/lib/linux-tools/<kver>/.
           if ! command -v bpftool >/dev/null 2>&1; then
-            echo "::error::bpftool not found after install; check apt output above for missing packages"
-            exit 2
+            BTF="/usr/lib/linux-tools/${KVER}/bpftool"
+            if [ -x "$BTF" ]; then
+              sudo ln -sf "$BTF" /usr/local/bin/bpftool
+            fi
           fi
+
+          if ! command -v bpftool >/dev/null 2>&1; then
+            echo "::error::bpftool not found after installing: ${PKGS[*]}"
+            exit 1
+          fi
+
+          bpftool version
 
       - name: Cache vmlinux.h
         id: cache-vmlinux

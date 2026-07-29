@@ -33,8 +33,18 @@ jobs:
 
       - name: Install BPF build dependencies
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-headers-$(uname -r) make
+          KVER="$(uname -r)"
+          PKGS=(clang llvm libbpf-dev linux-tools-common "linux-headers-${KVER}" make)
+          if apt-cache show "linux-tools-${KVER}" >/dev/null 2>&1; then
+            PKGS+=("linux-tools-${KVER}")
+          fi
+          sudo apt-get install -y "${PKGS[@]}"
+          if ! command -v bpftool >/dev/null 2>&1 && [ -x "/usr/lib/linux-tools/${KVER}/bpftool" ]; then
+            sudo ln -sf "/usr/lib/linux-tools/${KVER}/bpftool" /usr/local/bin/bpftool
+          fi
+          command -v bpftool
 
       - name: Generate vmlinux.h
         run: |
