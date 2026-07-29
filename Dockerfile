@@ -5,7 +5,10 @@
 ARG VERSION=dev
 ARG TARGETARCH=amd64
 
-# Stage 1: Build BPF programs
+# Stage 1: BPF objects
+#
+# Prefer bpf/*.bpf.o from the build context (CI generates them on the runner).
+# Fall back to compiling inside the image when bpf/vmlinux.h is supplied locally.
 FROM ubuntu:22.04 AS bpf-builder
 
 # hadolint ignore=DL3009
@@ -16,6 +19,7 @@ RUN apt-get update && \
     libbpf-dev \
     make \
     linux-headers-generic \
+    linux-tools-common \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,10 +28,18 @@ COPY Makefile ./
 
 ARG TARGETARCH
 
-# vmlinux.h comes from the build host's BTF, which is not available inside this
-# stage, so it must be committed or mounted. Failing here is better than
-# silently shipping an image with no BPF objects.
-RUN make bpf GOARCH="${TARGETARCH}"
+RUN set -eux; \
+    if compgen -G "bpf/*.bpf.o" > /dev/null; then \
+      echo "Using pre-built BPF objects from build context"; \
+      ls -la bpf/*.bpf.o; \
+    elif [ -f bpf/vmlinux.h ]; then \
+      echo "Compiling BPF objects from supplied bpf/vmlinux.h"; \
+      make bpf GOARCH="${TARGETARCH}"; \
+    else \
+      echo "No bpf/*.bpf.o or bpf/vmlinux.h in the Docker build context." >&2; \
+      echo "Run 'make bpf' on the host (or download CI bpf-objects) before 'docker build'." >&2; \
+      exit 1; \
+    fi
 
 # Stage 2: Build Go binaries
 FROM golang:1.22-alpine AS go-builder
