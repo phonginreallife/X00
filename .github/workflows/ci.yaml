@@ -126,32 +126,54 @@ jobs:
           sudo apt-get update -y
 
           KVER="$(uname -r)"
-          # bpftool is a virtual apt package on Ubuntu; linux-tools-common
-          # provides /usr/sbin/bpftool. Pair it with the kernel-matched tools
-          # package so Azure runners get a compatible binary.
+          # bpftool is a virtual apt package on Ubuntu. linux-tools-common ships
+          # a /usr/sbin wrapper that often fails on Azure (looks up 6.17.0-1020
+          # while the binary lives under 6.17.0-1020-azure), so resolve the real
+          # binary under /usr/lib/linux-tools/ and symlink it into /usr/local/bin.
           PKGS=(clang llvm libbpf-dev linux-tools-common)
-          if apt-cache show "linux-tools-${KVER}" >/dev/null 2>&1; then
-            PKGS+=("linux-tools-${KVER}")
-          elif apt-cache show linux-tools-azure >/dev/null 2>&1; then
-            PKGS+=(linux-tools-azure)
-          fi
+          for pkg in \
+            "linux-tools-${KVER}" \
+            "linux-cloud-tools-${KVER}" \
+            linux-tools-azure \
+            linux-cloud-tools-azure; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              PKGS+=("$pkg")
+            fi
+          done
 
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${PKGS[@]}"
 
-          # Some images only expose bpftool under /usr/lib/linux-tools/<kver>/.
-          if ! command -v bpftool >/dev/null 2>&1; then
-            BTF="/usr/lib/linux-tools/${KVER}/bpftool"
-            if [ -x "$BTF" ]; then
-              sudo ln -sf "$BTF" /usr/local/bin/bpftool
-            fi
-          fi
+          resolve_bpftool() {
+            local kver="$1"
+            local candidate base
 
-          if ! command -v bpftool >/dev/null 2>&1; then
+            for candidate in \
+              "/usr/lib/linux-tools/${kver}/bpftool" \
+              "/usr/lib/linux-tools/${kver%-azure}/bpftool"; do
+              if [ -x "$candidate" ]; then
+                sudo ln -sf "$candidate" /usr/local/bin/bpftool
+                echo "Using bpftool: $candidate"
+                /usr/local/bin/bpftool version
+                return 0
+              fi
+            done
+
+            if command -v bpftool >/dev/null 2>&1 && bpftool version >/dev/null 2>&1; then
+              echo "Using bpftool: $(command -v bpftool)"
+              bpftool version
+              return 0
+            fi
+
+            return 1
+          }
+
+          if ! resolve_bpftool "$KVER"; then
             echo "::error::bpftool not found after installing: ${PKGS[*]}"
+            ls -la "/usr/lib/linux-tools/" || true
             exit 1
           fi
 
-          bpftool version
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
 
       - name: Cache vmlinux.h
         id: cache-vmlinux
@@ -165,7 +187,7 @@ jobs:
       - name: Generate vmlinux.h
         if: steps.cache-vmlinux.outputs.cache-hit != 'true'
         run: |
-          sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          sudo /usr/local/bin/bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
       - name: Cache BPF objects
         id: cache-bpf

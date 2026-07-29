@@ -37,19 +37,32 @@ jobs:
           sudo apt-get update
           KVER="$(uname -r)"
           PKGS=(clang llvm libbpf-dev linux-tools-common "linux-headers-${KVER}" make)
-          if apt-cache show "linux-tools-${KVER}" >/dev/null 2>&1; then
-            PKGS+=("linux-tools-${KVER}")
-          fi
+          for pkg in \
+            "linux-tools-${KVER}" \
+            "linux-cloud-tools-${KVER}" \
+            linux-tools-azure \
+            linux-cloud-tools-azure; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+              PKGS+=("$pkg")
+            fi
+          done
           sudo apt-get install -y "${PKGS[@]}"
-          if ! command -v bpftool >/dev/null 2>&1 && [ -x "/usr/lib/linux-tools/${KVER}/bpftool" ]; then
-            sudo ln -sf "/usr/lib/linux-tools/${KVER}/bpftool" /usr/local/bin/bpftool
-          fi
-          command -v bpftool
+
+          for candidate in \
+            "/usr/lib/linux-tools/${KVER}/bpftool" \
+            "/usr/lib/linux-tools/${KVER%-azure}/bpftool"; do
+            if [ -x "$candidate" ]; then
+              sudo ln -sf "$candidate" /usr/local/bin/bpftool
+              break
+            fi
+          done
+
+          /usr/local/bin/bpftool version
 
       - name: Generate vmlinux.h
         run: |
           if [ ! -f bpf/vmlinux.h ]; then
-            bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+            /usr/local/bin/bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
           fi
 
       - name: Build BPF programs
