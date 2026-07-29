@@ -49,6 +49,15 @@ spec:
           - "-config=/etc/kernelseal/config.yaml"
           - "-exec-monitor=/bpf/exec_monitor.bpf.o"
           - "-lsm=/bpf/lsm_file_protect.bpf.o"
+          # Uncomment and set to the GID your application runs as if it is not
+          # root. The socket is 0660 root:root by default, so a non-root shim
+          # gets EACCES on connect before it can request anything - which
+          # surfaces as the shim refusing to start your app, not as a warning.
+          # Keep the mode at 0660 and share by group rather than loosening it
+          # (SECURITY.md), and add the same GID to the application pod:
+          #     securityContext:
+          #       supplementalGroups: [1000]
+          # - "-socket-group=1000"
         
         securityContext:
           privileged: true
@@ -92,6 +101,14 @@ spec:
           readOnly: true
         - name: kernelseal-socket
           mountPath: /run/kernelseal
+        # Tracepoint ids are read from tracefs or debugfs. Neither is propagated
+        # into a pod's mount namespace by the runtime, privileged or not, so both
+        # are bind-mounted: modern systemd mounts tracefs at /sys/kernel/tracing,
+        # older setups only expose it under debugfs. Missing both fails the attach
+        # with "neither debugfs nor tracefs are mounted".
+        - name: sys-kernel-tracing
+          mountPath: /sys/kernel/tracing
+          readOnly: true
         - name: sys-kernel-debug
           mountPath: /sys/kernel/debug
           readOnly: true
@@ -131,10 +148,16 @@ spec:
         hostPath:
           path: /run/kernelseal
           type: DirectoryOrCreate
+      # DirectoryOrCreate for both: requiring either one to exist would stop the
+      # agent scheduling on a node that only has the other.
+      - name: sys-kernel-tracing
+        hostPath:
+          path: /sys/kernel/tracing
+          type: DirectoryOrCreate
       - name: sys-kernel-debug
         hostPath:
           path: /sys/kernel/debug
-          type: Directory
+          type: DirectoryOrCreate
       - name: sys-kernel-btf
         hostPath:
           path: /sys/kernel/btf
