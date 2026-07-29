@@ -115,11 +115,66 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Cache APT packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: clang llvm libbpf-dev bpftool
-          version: 1.0
+      # - name: Cache APT packages
+      #   uses: awalsh128/cache-apt-pkgs-action@latest
+      #   with:
+      #     packages: clang llvm libbpf-dev bpftool
+      #     version: 1.0
+      - name: Install BPF build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+
+          # Try a plain install first
+          install_pkgs() {
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              clang llvm libbpf-dev bpftool
+          }
+
+          # Retry helper (3 tries with backoff)
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until "$@"; do
+              n=$((n+1))
+              if [ $n -ge $max ]; then
+                return 1
+              fi
+              echo "Command failed, retrying in $delay s... ($n/$max)"
+              sleep $delay
+              delay=$((delay*2))
+            done
+          }
+
+          if retry install_pkgs; then
+            echo "Packages installed successfully."
+          else
+            echo "Initial install failed; trying linux-tools fallbacks for kernel compatibility..."
+
+            # Try kernel-specific linux-tools (common requirement for bpftool)
+            if apt-cache policy "linux-tools-$(uname -r)" | grep -q Candidate; then
+              echo "Found linux-tools-$(uname -r) in apt cache; installing it."
+              sudo apt-get install -y "linux-tools-$(uname -r)"
+            elif apt-cache policy linux-tools-azure | grep -q Candidate; then
+              echo "Found linux-tools-azure; installing it."
+              sudo apt-get install -y linux-tools-azure
+            elif apt-cache policy linux-cloud-tools-azure | grep -q Candidate; then
+              echo "Found linux-cloud-tools-azure; installing it."
+              sudo apt-get install -y linux-cloud-tools-azure
+            else
+              echo "No linux-tools variant found; continuing to try installing base packages."
+            fi
+
+            # Try installing base packages again (will fail if really missing)
+            retry install_pkgs
+          fi
+
+          # Verify bpftool exists
+          if ! command -v bpftool >/dev/null 2>&1; then
+            echo "::error::bpftool not found after install; check apt output above for missing packages"
+            exit 2
+          fi
 
       - name: Cache vmlinux.h
         id: cache-vmlinux
