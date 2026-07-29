@@ -295,15 +295,15 @@ jobs:
           name: bpf-objects
           path: bpf/
 
-      - name: Download binary
+      - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: kernelseal-binary
+          name: kernelseal-binaries
+          path: build/
 
       - name: Run integration tests
         run: |
-          chmod +x ./kernelseal
-          # Verify binary runs
-          ./kernelseal -help || true
-          # Run Go integration tests (mocked, no BPF required)
-          go test -v -tags=integration ./test/integration/... || true
+          chmod +x build/kernelseal build/kernelseal-exec
+          build/kernelseal -help || true
+          # BPF/LSM tests skip without root + bpf in lsm=; shim tests always run.
+          go test -v ./test/integration/...
