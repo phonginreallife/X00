@@ -154,8 +154,8 @@ cat /proc/$SLEEP_PID/environ
 Everything depends on the node being booted with `bpf` in its `lsm=` list, which
 is not the default on most distributions. The probe answers that in about twenty
 seconds. It uses the published image, so the node needs no toolchain, and it runs
-in `audit` mode with no secret bindings — nothing can be blocked and no secret is
-read, which makes it safe against a production node.
+in `audit` mode with no secret bindings, so nothing can be blocked and no secret
+is read. That makes it safe to run against a production node.
 
 ```bash
 kubectl apply -f deploy/kernelseal-probe.yaml
@@ -211,8 +211,8 @@ spec:
 
 A node-wide agent serves a single socket to every pod that mounts it, so any pod
 on the node can ask for any configured binary's secrets. Use it only where every
-workload on the node is equally trusted — a single-tenant cluster, or a dedicated
-node group — and read the authorization boundary section of
+workload on the node is equally trusted, such as a single-tenant cluster or a
+dedicated node group, and read the authorization boundary section of
 [SECURITY.md](SECURITY.md) first.
 
 ```bash
