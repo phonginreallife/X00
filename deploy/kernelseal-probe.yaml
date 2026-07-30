@@ -1,0 +1,210 @@
+# KernelSeal node probe: answers "can this node enforce anything?" in ~20 seconds.
+#
+# Run this before deploying the DaemonSet. It uses the published image, so the
+# node needs no git, Go, clang or kernel headers - the BPF objects are already
+# built into /bpf/ and CO-RE relocates them to whatever kernel it lands on.
+#
+# Safe to run on a production node: the probe writes its own config with
+# mode: audit and no secret bindings, so nothing can be blocked and no secret is
+# read. It attaches, reports, detaches and exits.
+#
+#   kubectl apply -f deploy/kernelseal-probe.yaml
+#   kubectl logs -f job/kernelseal-probe
+#   kubectl delete -f deploy/kernelseal-probe.yaml
+#
+# To probe a specific node, uncomment nodeName below. By default it lands
+# wherever the scheduler puts it, which is fine when every node group shares an
+# AMI - and misleading when they do not.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kernelseal-probe
+  labels:
+    app.kubernetes.io/name: kernelseal
+    app.kubernetes.io/component: probe
+spec:
+  backoffLimit: 0 # A failed probe is a result, not something to retry.
+  template:
+    spec:
+      restartPolicy: Never
+      # Matches the DaemonSet. Without it the agent sees namespaced PIDs while
+      # the BPF programs report init-namespace TGIDs, and nothing would match.
+      hostPID: true
+
+      # nodeName: ip-10-201-0-171.ec2.internal
+
+      tolerations:
+      - operator: Exists
+
+      containers:
+      - name: probe
+        image: ghcr.io/phonginreallife/kernelseal:v1.0.0
+        imagePullPolicy: IfNotPresent
+
+        securityContext:
+          privileged: true
+
+        # Explicit limits so a namespace LimitRange cannot OOMKill the probe
+        # mid-run and make a healthy node look broken.
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -u
+          echo "=============================================="
+          echo " KernelSeal node probe"
+          echo "=============================================="
+          echo "node kernel : $(uname -r)"
+
+          fail=0
+
+          # 1. BPF-LSM has to be in the kernel's active LSM list. This is the
+          #    check that fails by default on EKS: the kernel is built with
+          #    CONFIG_BPF_LSM=y but bpf is not in the boot-time lsm= list.
+          lsm="$(cat /sys/kernel/security/lsm 2>/dev/null || true)"
+          if [ -z "$lsm" ]; then
+            echo "lsm list   : UNREADABLE (securityfs not mounted?)"
+            fail=1
+          else
+            echo "lsm list   : $lsm"
+            case ",$lsm," in
+              *,bpf,*) echo "  [PASS] bpf is an active LSM" ;;
+              *)       echo "  [FAIL] bpf is NOT an active LSM - nothing can be enforced"
+                       echo "         Fix in the launch template user-data, then recycle nodes:"
+                       echo "           CURRENT=\$(cat /sys/kernel/security/lsm)"
+                       echo "           grubby --update-kernel=ALL --args=\"lsm=\${CURRENT},bpf\""
+                       echo "           reboot"
+                       echo "         Append to the existing list - lsm= REPLACES it, and"
+                       echo "         'lsm=bpf' alone would disable apparmor and lockdown."
+                       fail=1 ;;
+            esac
+          fi
+
+          # 2. CO-RE needs the kernel's own BTF to relocate the prebuilt objects.
+          if [ -r /sys/kernel/btf/vmlinux ]; then
+            echo "  [PASS] /sys/kernel/btf/vmlinux present ($(wc -c < /sys/kernel/btf/vmlinux) bytes)"
+          else
+            echo "  [FAIL] /sys/kernel/btf/vmlinux missing - CO-RE cannot relocate"
+            fail=1
+          fi
+
+          # 3. Attaching a tracepoint means reading its numeric id out of
+          #    tracefs or debugfs. Both are separate filesystems mounted over
+          #    /sys, and a container runtime does not propagate them into the
+          #    pod's mount namespace even when privileged - they have to be
+          #    bind-mounted in. Without them the agent fails with "neither
+          #    debugfs nor tracefs are mounted", which reads like a kernel
+          #    problem rather than a missing volume.
+          if [ -r /sys/kernel/tracing/events/sched/sched_process_exec/id ]; then
+            echo "  [PASS] tracefs readable at /sys/kernel/tracing"
+          elif [ -r /sys/kernel/debug/tracing/events/sched/sched_process_exec/id ]; then
+            echo "  [PASS] debugfs tracing readable at /sys/kernel/debug/tracing"
+          else
+            echo "  [FAIL] neither tracefs nor debugfs is readable in this pod"
+            echo "         The node almost certainly has them; the pod is missing the"
+            echo "         hostPath mounts for /sys/kernel/tracing and /sys/kernel/debug."
+            fail=1
+          fi
+
+          # 4. Actually load and attach. Everything above can look right while
+          #    the attach still fails, so this is the only conclusive check.
+          #    audit mode with no bindings: nothing is blocked, nothing is read.
+          cat > /tmp/probe.yaml <<'EOF'
+          version: v1
+          policy:
+            mode: audit
+            blockEnviron: true
+            kernelBinaryFilter: false
+          secrets: []
+          monitoring:
+            enabled: false
+          EOF
+
+          echo ""
+          echo "--- attaching (10s) ---"
+          timeout 10 /usr/local/bin/kernelseal \
+            -config /tmp/probe.yaml \
+            -exec-monitor /bpf/exec_monitor.bpf.o \
+            -lsm /bpf/lsm_file_protect.bpf.o > /tmp/agent.log 2>&1
+          sed 's/^/  /' /tmp/agent.log
+          echo "--- end ---"
+          echo ""
+
+          if grep -q 'Exec monitor BPF programs loaded and attached' /tmp/agent.log; then
+            echo "  [PASS] exec tracepoints attached"
+          else
+            echo "  [FAIL] exec tracepoints did not attach"
+            fail=1
+          fi
+
+          # The agent logs [OK] even when an individual attach warned, so check
+          # for the warnings rather than trusting the success line alone.
+          if grep -qE 'BPF-LSM not available|LSM programs not loaded|Failed to attach' /tmp/agent.log; then
+            echo "  [FAIL] LSM programs did not attach - see the warnings above"
+            fail=1
+          elif grep -q 'LSM BPF programs loaded and attached' /tmp/agent.log; then
+            echo "  [PASS] LSM programs attached - this node can enforce"
+          else
+            echo "  [FAIL] no LSM attach reported"
+            fail=1
+          fi
+
+          echo ""
+          if [ "$fail" -eq 0 ]; then
+            echo "RESULT: node is ready for KernelSeal"
+          else
+            echo "RESULT: node CANNOT enforce - fix the [FAIL] items above"
+          fi
+          exit "$fail"
+
+        volumeMounts:
+        - name: securityfs
+          mountPath: /sys/kernel/security
+          readOnly: true
+        - name: sys-kernel-btf
+          mountPath: /sys/kernel/btf
+          readOnly: true
+        - name: bpf-maps
+          mountPath: /sys/fs/bpf
+        # Tracepoint ids are read from here. Both are mounted because which one
+        # exists depends on the distro: modern systemd mounts tracefs at
+        # /sys/kernel/tracing, while older setups only expose it under debugfs.
+        - name: tracefs
+          mountPath: /sys/kernel/tracing
+          readOnly: true
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+          readOnly: true
+
+      volumes:
+      - name: securityfs
+        hostPath:
+          path: /sys/kernel/security
+          type: Directory
+      - name: sys-kernel-btf
+        hostPath:
+          path: /sys/kernel/btf
+          type: DirectoryOrCreate
+      - name: bpf-maps
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      # DirectoryOrCreate rather than Directory: a node that has only one of the
+      # two must still schedule the probe, so the check above can report which
+      # one is actually usable instead of the pod failing to start.
+      - name: tracefs
+        hostPath:
+          path: /sys/kernel/tracing
+          type: DirectoryOrCreate
+      - name: debugfs
+        hostPath:
+          path: /sys/kernel/debug
+          type: DirectoryOrCreate
