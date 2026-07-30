@@ -31,7 +31,11 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
+          # No base. It used to be the default branch, which on a push to main
+          # resolves to the same commit as head, so TruffleHog diffed a commit
+          # against itself and scanned 0 bytes while still reporting success.
+          # Without it the whole tree is scanned, which takes seconds here and
+          # cannot silently pass.
           extra_args: --only-verified
 
       - name: Gitleaks Secret Scan

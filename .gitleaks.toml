@@ -45,6 +45,11 @@ paths = [
   # Demo files with placeholder secrets
   '''demo/.*''',
   '''scripts/run-demo\.sh$''',
+  # Same reason as run-demo.sh. It drives a demo server on 127.0.0.1 and sends
+  # back the JWT that server minted a moment earlier, so the curl-auth-header
+  # rule fires on "Authorization: Bearer $TOKEN" where the value is a shell
+  # variable holding a token with a lifetime measured in seconds.
+  '''scripts/run-node-demo\.sh$''',
   # Gitleaks config itself
   '''\.gitleaks\.toml$''',
 ]
