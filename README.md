@@ -8,6 +8,10 @@
 
 **Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM**
 
+![An application reads its secret from the environment while root is refused by
+the kernel: environ, mem and maps all return "Operation not permitted", a ptrace
+attach is denied, and id -u reports 0](docs/kernelseal-demo.gif)
+
 KernelSeal delivers application secrets directly into a process's environment at
 exec time and uses BPF-LSM to stop anything else on the host from reading them
 back out. Secrets are never written to the container filesystem, never mounted as
