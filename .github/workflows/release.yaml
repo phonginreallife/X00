@@ -102,7 +102,7 @@ jobs:
           push: true
           # Without this the Dockerfile's ARG VERSION is empty, main.Version
           # falls back to "dev", and a running container cannot report which
-          # release it is - the tag says v3.1.0 while the binary says dev.
+          # release it is - the image tag says one thing, the binary says dev.
           build-args: |
             VERSION=${{ github.ref_name }}
           platforms: linux/amd64,linux/arm64

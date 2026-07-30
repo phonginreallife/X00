@@ -7,9 +7,10 @@
 #   2. The app can use them (issues and verifies a signed token).
 #   3. The app can read its own /proc files (allowSelfRead).
 #   4. Nobody else can: environ, mem and maps all return EPERM.
-#   5. Protection survives OS threads exiting inside the running process. This is
-#      the regression that shipped in v3.0.0: sched_process_exit fires per thread,
-#      and a sibling thread's exit used to be reported as the process exiting.
+#   5. Protection survives OS threads exiting inside the running process.
+#      sched_process_exit fires per thread, and a sibling thread's exit must not
+#      be reported as the process exiting - that once dropped kernel protection
+#      while the process was still running and holding its secrets.
 #
 # Run from the repository root. Needs root for BPF, and a kernel booted with bpf
 # in its lsm= list for steps 4 and 5 to mean anything.
@@ -354,12 +355,12 @@ if command -v bpftool >/dev/null 2>&1; then
     if bpftool map dump name protected_pids 2>/dev/null | grep -q .; then
         pass "protected_pids still populated after the thread churn"
     else
-        fail "protected_pids emptied by the thread churn - this is the v3.0.0 leak"
+        fail "protected_pids emptied by the thread churn - a thread exit was treated as a process exit"
     fi
 fi
 
 if grep -q 'Ignoring exit event' "$AGENT_LOG"; then
-    fail "agent logged 'Ignoring exit event' (the reverted v3.0.1 guard is present)"
+    fail "agent logged 'Ignoring exit event': a user-space liveness check is gating the exit path, which suppresses every real exit"
 else
     pass "no reverted-guard warnings in the agent log"
 fi
