@@ -17,10 +17,11 @@
 
 | Version | Supported | Notes |
 |---------|-----------|-------|
-| 3.x.x   | Yes | Current stable release |
-| 2.x.x   | No | Upgrade to 3.x; 2.x used the removed memory injector |
-| 1.x.x   | No | Superseded |
-| 0.x.x   | No | Superseded |
+| 1.x.x   | Yes | Current stable release |
+
+Versioning restarted at 1.0.0 with the first public release. Tags published before
+it were removed rather than left to be found: in each of them the protection
+guarantee was either incomplete or actively broken, so none should be used.
 
 We recommend always running the latest stable version.
 
@@ -165,8 +166,27 @@ binary name in the request therefore selects *which* secrets apply; it is not an
 identity claim.
 
 The practical consequence is that any process able to open the socket can request
-the secrets bound to any configured binary by naming it. Scope the socket
-accordingly:
+the secrets bound to any configured binary by naming it. This requires no
+subterfuge: the request is a JSON object containing a string, so a compromised
+container does not need to install the binary, rename anything, or execute
+anything. Writing to the socket is sufficient.
+
+```bash
+# Any process that can reach the socket, without the shim involved at all
+echo '{"binary":"/usr/bin/node"}' | nc -U /run/kernelseal/kernelseal.sock
+```
+
+With a node-wide `hostPath` socket, that means **any pod on the node that mounts
+`/run/kernelseal` can obtain every secret in that node's configuration.** On nodes
+dedicated to a single application this is self-only and harmless. On shared nodes
+it is cross-tenant secret disclosure, and the sidecar pattern with a pod-scoped
+`emptyDir` socket is the correct deployment.
+
+Closing this properly requires authorizing on something the container cannot
+forge. The caller's cgroup qualifies — it is set by the kernel and maps to a pod —
+so a future release resolves the peer's cgroup to a pod and matches bindings on
+namespace and labels, leaving the binary name to select only *within* what that pod
+is entitled to. Tracked for 1.1.0. Until then, scope the socket:
 
 - Mount the socket volume only into pods that should receive those secrets. Use a
   pod-scoped `emptyDir` rather than a node-wide `hostPath` when a DaemonSet is not
@@ -190,10 +210,49 @@ Outside the trust boundary:
 - The application itself. It receives its own secrets and nothing else.
 - Every other process on the host, including root, which the LSM hooks refuse.
 
+### Agent Restarts End Protection Silently
+
+**Restarting the agent leaves every already-running protected process
+unprotected, permanently, with nothing logged.**
+
+Protection is installed once, during the shim's handshake, immediately before
+`execve`. The protected PID set lives in a BPF map owned by the agent process, and
+the LSM programs are attached for that process's lifetime. When the agent exits —
+upgrade, `rollout restart`, OOM kill, eviction, node pressure — the map and the
+attachment go with it. The replacement agent starts with an empty map.
+
+Applications that are already running never handshake again, because their `execve`
+is long past. Their `/proc/<pid>/environ` becomes readable again and no audit event
+is emitted, because from the new agent's point of view those processes were never
+protected. Nothing in the logs marks the transition.
+
+This affects the DaemonSet and sidecar deployments equally. A sidecar container
+restart leaves the application container running, so the same gap opens; native
+sidecars (Kubernetes 1.29+ `initContainers` with `restartPolicy: Always`) behave
+the same way.
+
+Until this is fixed, treat an agent restart as an event that requires restarting
+the workloads it protects:
+
+```bash
+kubectl rollout restart ds/kernelseal -n kernelseal-system
+kubectl rollout restart deploy/<your-app> -n <your-namespace>   # agent first, then app
+```
+
+- Set `updateStrategy: OnDelete` on the DaemonSet so agent restarts are deliberate
+  rather than triggered by any manifest change.
+- Alert on `kernelseal_protected_pids` falling below the number of protected
+  workloads on that node. It is the only signal this has happened.
+
+The fix is to pin the BPF links and the protected-PID map to bpffs so both survive
+the agent process, which removes the gap during the restart as well as after it.
+Tracked for 1.1.0.
+
 ### Residual Risks
 
 | Risk | Impact | Notes |
 |------|--------|-------|
+| Agent restart | Running protected processes silently lose protection for the rest of their lives | Nothing is pinned to bpffs yet; restart the workload after the agent |
 | Same-pod process requests another binary's secrets | Reads secrets bound to any configured binary | Socket reachability is the boundary; scope volumes per pod |
 | Child processes inherit the environment | Children hold secrets but are not themselves protected | Protection is per-PID |
 | Secrets remain in the agent's heap | Values may persist until garbage collected | Go strings cannot be reliably zeroed |
@@ -498,11 +557,16 @@ groups:
 - [ ] Socket mode left at `0660` with a shared `fsGroup`
 - [ ] Resource limits configured
 - [ ] Secrets rotated on schedule
+- [ ] `updateStrategy: OnDelete` on the DaemonSet, so agent restarts are deliberate
+- [ ] A documented procedure to restart protected workloads after any agent
+      restart, since protection does not survive it
 
 ### Monitoring
 
 - [ ] Audit logs forwarded to SIEM
 - [ ] Alerts configured for blocked access
+- [ ] Alert on `kernelseal_protected_pids` dropping below the expected count,
+      which is the only indication that an agent restart ended protection
 - [ ] Regular review of access patterns
 - [ ] Vulnerability scanning in CI/CD
 - [ ] Dependency updates monitored
