@@ -183,8 +183,8 @@ it is cross-tenant secret disclosure, and the sidecar pattern with a pod-scoped
 `emptyDir` socket is the correct deployment.
 
 Closing this properly requires authorizing on something the container cannot
-forge. The caller's cgroup qualifies — it is set by the kernel and maps to a pod —
-so a future release resolves the peer's cgroup to a pod and matches bindings on
+forge. The caller's cgroup qualifies, since it is set by the kernel and maps to a
+pod, so a future release resolves the peer's cgroup to a pod and matches bindings on
 namespace and labels, leaving the binary name to select only *within* what that pod
 is entitled to. Tracked for 1.1.0. Until then, scope the socket:
 
@@ -217,9 +217,9 @@ unprotected, permanently, with nothing logged.**
 
 Protection is installed once, during the shim's handshake, immediately before
 `execve`. The protected PID set lives in a BPF map owned by the agent process, and
-the LSM programs are attached for that process's lifetime. When the agent exits —
-upgrade, `rollout restart`, OOM kill, eviction, node pressure — the map and the
-attachment go with it. The replacement agent starts with an empty map.
+the LSM programs are attached for that process's lifetime. When the agent exits,
+whether from an upgrade, a `rollout restart`, an OOM kill, an eviction or node
+pressure, the map and the attachment go with it. The replacement agent starts with an empty map.
 
 Applications that are already running never handshake again, because their `execve`
 is long past. Their `/proc/<pid>/environ` becomes readable again and no audit event

@@ -33,8 +33,8 @@ either incomplete or actively broken in each of them.
   maps and ptrace, plus `allowSelfRead` so a process can still inspect itself.
 - **Fail-closed by default.** Secrets are withheld when kernel protection was
   requested but is unavailable, and a binary whose configured secrets *all* fail
-  to resolve is refused rather than started unprotected — a misconfigured source
-  cannot quietly downgrade an application to no protection.
+  to resolve is refused rather than started unprotected, so a misconfigured
+  source cannot quietly downgrade an application to no protection.
 - **Kernel-side binary filtering.** Only configured binaries generate exec
   events, so an idle host produces no ring-buffer traffic.
 - **Reconciliation.** A periodic sweep releases protection for PIDs whose process
@@ -44,8 +44,9 @@ either incomplete or actively broken in each of them.
 - **Deployment.** DaemonSet (node-wide) and sidecar (pod-scoped) manifests, a
   container image at `ghcr.io/phonginreallife/kernelseal`, and multi-arch
   release archives for amd64 and arm64 with the BPF objects included.
-- **Node probe.** Reports whether a node can enforce anything at all — active
-  LSM list, kernel BTF, tracefs, and a real load-and-attach — before you deploy.
+- **Node probe.** Reports whether a node can enforce anything at all, covering
+  the active LSM list, kernel BTF, tracefs, and a real load-and-attach, before
+  you deploy.
 - **Node demo application** (`demo/node-app/`) and an end-to-end test
   (`scripts/run-node-demo.sh`) that asserts delivery, self-read, `EPERM` from
   outside, and that protection survives OS threads exiting inside a live process.
