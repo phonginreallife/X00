@@ -149,14 +149,33 @@ cat /proc/$SLEEP_PID/environ
 
 ### Deploy to Kubernetes
 
+#### 1. Check the nodes first
+
+Everything depends on the node being booted with `bpf` in its `lsm=` list, which
+is not the default on most distributions. The probe answers that in about twenty
+seconds. It uses the published image, so the node needs no toolchain, and it runs
+in `audit` mode with no secret bindings — nothing can be blocked and no secret is
+read, which makes it safe against a production node.
+
 ```bash
-kubectl apply -f deploy/manifests/namespace.yaml
-kubectl apply -f deploy/manifests/configmap.yaml
-kubectl apply -f deploy/manifests/daemonset.yaml
+kubectl apply -f deploy/kernelseal-probe.yaml
+kubectl logs -f job/kernelseal-probe
+kubectl delete -f deploy/kernelseal-probe.yaml
 ```
 
-For the sidecar pattern, see [deploy/kernelseal-sidecar.yaml](deploy/kernelseal-sidecar.yaml).
-The pieces an application pod needs are:
+It ends with `RESULT: node is ready for KernelSeal`, or one `[FAIL]` line per
+unmet requirement with the fix for each. The probe loads and attaches for real,
+because every static check can pass on a node where the attach still fails.
+
+#### 2. Sidecar, one agent per pod (start here)
+
+Socket reachability is the authorization boundary: any process that can open the
+delivery socket can request the secrets bound to any configured binary by naming
+it. A per-pod agent keeps that socket inside the pod the secrets belong to, so
+this is the pattern to reach for first.
+
+[deploy/kernelseal-sidecar.yaml](deploy/kernelseal-sidecar.yaml) is a complete
+runnable example. The pieces an application pod needs are:
 
 ```yaml
 spec:
@@ -167,7 +186,7 @@ spec:
   initContainers:
   # Copies the shim in, so the application image needs no changes
   - name: install-shim
-    image: ghcr.io/phonginreallife/kernelseal:latest
+    image: ghcr.io/phonginreallife/kernelseal:v1.0.0
     command: ["/bin/sh", "-c", "cp /usr/local/bin/kernelseal-exec /kernelseal/"]
     volumeMounts:
     - {name: kernelseal-bin, mountPath: /kernelseal}
@@ -186,6 +205,20 @@ spec:
     emptyDir: {}
   - name: kernelseal-socket
     emptyDir: {medium: Memory, sizeLimit: 1Mi}
+```
+
+#### 3. DaemonSet, one agent per node
+
+A node-wide agent serves a single socket to every pod that mounts it, so any pod
+on the node can ask for any configured binary's secrets. Use it only where every
+workload on the node is equally trusted — a single-tenant cluster, or a dedicated
+node group — and read the authorization boundary section of
+[SECURITY.md](SECURITY.md) first.
+
+```bash
+kubectl apply -f deploy/manifests/namespace.yaml
+kubectl apply -f deploy/manifests/configmap.yaml
+kubectl apply -f deploy/manifests/daemonset.yaml
 ```
 
 ## Configuration
@@ -293,7 +326,7 @@ Example log output:
 
 ```
 [START] Starting KernelSeal - Secret Protection System
-   Version: v0.2.0
+   Version: v1.0.0
 [CONFIG] Loaded KernelSeal configuration from /etc/kernelseal/config.yaml
 [REGISTER] 2 secrets registered for binary: myapp
 [OK] Exec monitor BPF programs loaded and attached
