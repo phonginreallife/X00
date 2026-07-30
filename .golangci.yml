@@ -41,7 +41,7 @@ linters-settings:
     simplify: true
 
   goimports:
-    local-prefixes: kernelseal
+    local-prefixes: github.com/phonginreallife/kernelseal
 
   misspell:
     locale: US

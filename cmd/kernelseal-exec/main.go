@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"kernelseal/internal/protocol"
+	"github.com/phonginreallife/kernelseal/internal/protocol"
 )
 
 // Version is set at build time via -ldflags "-X main.Version=...".

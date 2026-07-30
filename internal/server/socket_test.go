@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
 )
 
 // noopProtector satisfies the Protector interface for tests that only care about

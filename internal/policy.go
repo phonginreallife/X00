@@ -13,8 +13,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"kernelseal/internal/secrets"
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 // PolicyManager manages KernelSeal security policies

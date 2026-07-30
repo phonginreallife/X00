@@ -5,8 +5,8 @@ import (
 	"syscall"
 	"testing"
 
-	"kernelseal/internal/protocol"
-	"kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/protocol"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
 )
 
 func request(binary string) protocol.Request {

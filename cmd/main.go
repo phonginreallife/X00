@@ -10,15 +10,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"kernelseal/internal"
-	"kernelseal/internal/bpf"
-	"kernelseal/internal/logging"
-	"kernelseal/internal/metrics"
-	"kernelseal/internal/protocol"
-	"kernelseal/internal/reconcile"
-	"kernelseal/internal/secrets"
-	"kernelseal/internal/server"
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal"
+	"github.com/phonginreallife/kernelseal/internal/bpf"
+	"github.com/phonginreallife/kernelseal/internal/logging"
+	"github.com/phonginreallife/kernelseal/internal/metrics"
+	"github.com/phonginreallife/kernelseal/internal/protocol"
+	"github.com/phonginreallife/kernelseal/internal/reconcile"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/server"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 const (

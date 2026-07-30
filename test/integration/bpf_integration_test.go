@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"kernelseal/internal/bpf"
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/bpf"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 const (

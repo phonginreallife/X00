@@ -16,7 +16,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 // Manager handles all BPF program loading and event processing

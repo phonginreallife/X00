@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 func TestNewManager(t *testing.T) {

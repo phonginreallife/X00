@@ -1,4 +1,4 @@
-module kernelseal
+module github.com/phonginreallife/kernelseal
 
 go 1.22
 

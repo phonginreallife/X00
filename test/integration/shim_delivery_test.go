@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"testing"
 
-	"kernelseal/internal/secrets"
-	"kernelseal/internal/server"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/server"
 )
 
 // stubProtector stands in for the BPF manager so the delivery path can be tested

@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"kernelseal/internal/bpf"
-	"kernelseal/internal/secrets"
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/bpf"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 // startShim launches the shim without waiting for it, so the test can inspect the

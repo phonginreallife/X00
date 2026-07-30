@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
-	"kernelseal/internal/logging"
-	"kernelseal/internal/protocol"
-	"kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/logging"
+	"github.com/phonginreallife/kernelseal/internal/protocol"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
 )
 
 // handshakeTimeout bounds how long a single shim exchange may take, so a stuck

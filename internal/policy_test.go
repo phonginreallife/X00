@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"kernelseal/internal/secrets"
-	"kernelseal/internal/types"
+	"github.com/phonginreallife/kernelseal/internal/secrets"
+	"github.com/phonginreallife/kernelseal/internal/types"
 )
 
 func TestDefaultConfig(t *testing.T) {

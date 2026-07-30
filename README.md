@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/phonginreallife/kernelseal/actions/workflows/ci.yaml/badge.svg)](https://github.com/phonginreallife/kernelseal/actions/workflows/ci.yaml)
 [![Security](https://github.com/phonginreallife/kernelseal/actions/workflows/security.yaml/badge.svg)](https://github.com/phonginreallife/kernelseal/actions/workflows/security.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/phonginreallife/kernelseal)](https://goreportcard.com/report/github.com/phonginreallife/kernelseal)
 [![Release](https://img.shields.io/github/v/release/phonginreallife/kernelseal)](https://github.com/phonginreallife/kernelseal/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
