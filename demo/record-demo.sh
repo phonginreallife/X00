@@ -81,13 +81,19 @@ done
 # than at the point of use: a missing binary there prints an exec error into the
 # middle of the recording, which reads as KernelSeal failing rather than as the
 # kernel refusing the attach.
-if command -v gdb >/dev/null 2>&1; then
-    PTRACE_TOOL=gdb
-elif command -v strace >/dev/null 2>&1; then
+#
+# strace is preferred over gdb because its failure names the syscall and the
+# errno: "attach: ptrace(PTRACE_SEIZE, 1234): Operation not permitted". gdb in
+# batch mode reports "ptrace: Inappropriate ioctl for device", which is its own
+# mapping and not what the hook returned; the hook returns -EPERM. Correct
+# either way, but only one of them reads as a denial on a recording.
+if command -v strace >/dev/null 2>&1; then
     PTRACE_TOOL=strace
+elif command -v gdb >/dev/null 2>&1; then
+    PTRACE_TOOL=gdb
 else
-    printf "${RED}Need gdb or strace to demonstrate the ptrace denial.${NC}\n" >&2
-    printf "  apt-get install -y gdb\n" >&2
+    printf "${RED}Need strace or gdb to demonstrate the ptrace denial.${NC}\n" >&2
+    printf "  apt-get install -y strace\n" >&2
     exit 1
 fi
 
@@ -150,10 +156,10 @@ run "cat /proc/$APP_PID/mem"
 run "cat /proc/$APP_PID/maps"
 
 note "Even a debugger."
-if [ "$PTRACE_TOOL" = gdb ]; then
-    run "timeout 5 gdb -p $APP_PID -batch -ex 'info registers' 2>&1 | tail -2"
+if [ "$PTRACE_TOOL" = strace ]; then
+    run "timeout 5 strace -p $APP_PID 2>&1 | head -1"
 else
-    run "timeout 5 strace -p $APP_PID 2>&1 | head -2"
+    run "timeout 5 gdb -p $APP_PID -batch -ex 'info registers' 2>&1 | head -1"
 fi
 
 printf "\n"
