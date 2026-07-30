@@ -311,14 +311,28 @@ check_blocked environ
 check_blocked mem
 check_blocked maps
 
-if command -v gdb >/dev/null 2>&1; then
+# strace is preferred over gdb because it reports the syscall and the errno, so
+# this can assert the attach was refused rather than only that the tool exited
+# non-zero. An exit code alone cannot distinguish a denial from gdb failing for
+# its own reasons, which is a false pass in the one check that is supposed to
+# prove ptrace is blocked. gdb also maps this denial to "Inappropriate ioctl for
+# device" rather than EPERM, so its output is no help either.
+if command -v strace >/dev/null 2>&1; then
+    ptrace_out="$(timeout 5 strace -p "$APP_PID" 2>&1 | head -1 || true)"
+    if printf '%s' "$ptrace_out" | grep -q 'Operation not permitted'; then
+        pass "ptrace attach is denied: $ptrace_out"
+    else
+        fail "ptrace attach was not denied, got: $ptrace_out"
+    fi
+elif command -v gdb >/dev/null 2>&1; then
+    # Exit code only. See above for why this is the weaker check.
     if gdb -p "$APP_PID" -batch -ex quit >/dev/null 2>&1; then
         fail "gdb attached to the protected process"
     else
-        pass "ptrace attach is denied"
+        pass "ptrace attach is denied (gdb exited non-zero)"
     fi
 else
-    info "gdb not installed, skipping the ptrace check"
+    info "neither strace nor gdb installed, skipping the ptrace check"
 fi
 echo ""
 
