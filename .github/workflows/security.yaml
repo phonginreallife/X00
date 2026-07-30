@@ -27,16 +27,33 @@ jobs:
         with:
           fetch-depth: 0  # Full history for better detection
 
-      - name: TruffleHog Secret Scan
+      # Incremental, covering what this push introduced. base used to be the
+      # default branch, which on a push to main resolves to the same commit as
+      # head, so TruffleHog diffed a commit against itself, scanned 0 bytes and
+      # still reported success. Omitting it leaves the action to diff the push
+      # range instead.
+      - name: TruffleHog Secret Scan (push range)
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          # No base. It used to be the default branch, which on a push to main
-          # resolves to the same commit as head, so TruffleHog diffed a commit
-          # against itself and scanned 0 bytes while still reporting success.
-          # Without it the whole tree is scanned, which takes seconds here and
-          # cannot silently pass.
           extra_args: --only-verified
+
+      # The incremental scan above never revisits history, so nothing catches a
+      # credential committed before this job started working. The weekly run
+      # covers that.
+      #
+      # The CLI is invoked directly rather than through the action, because the
+      # action derives base and head from the event and there is no input that
+      # reliably means "ignore that and scan everything". "git file:///repo"
+      # walks the full history, and --fail turns a finding into a failed job
+      # rather than a line in a log nobody reads.
+      - name: TruffleHog Secret Scan (full history)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" \
+            ghcr.io/trufflesecurity/trufflehog:latest \
+            git file:///repo --only-verified --fail
 
       - name: Gitleaks Secret Scan
         uses: gitleaks/gitleaks-action@v2
