@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-30
+
+Supply chain and documentation. The agent, the shim and the BPF programs are
+unchanged, so the protection guarantee is identical to 1.0.0.
+
+### Added
+
+- **Signed releases.** Images and release artifacts are signed with cosign keyless
+  signing, so there is no key to store or rotate. Signatures bind to the image
+  digest rather than the tag, because a tag can be moved to a different image
+  afterwards while a digest cannot. The tarballs are covered by a signature over
+  `checksums.txt`.
+- **SBOM.** An SPDX SBOM ships as a release asset and as a cosign attestation on
+  the image, so a cluster that only knows a digest can still recover it.
+- **`deploy/kernelseal-probe.yaml`.** Reports whether a node can enforce anything,
+  covering the active LSM list, kernel BTF, tracefs and a real load-and-attach. It
+  was referenced by the 1.0.0 release notes without having been committed.
+- **`CONTRIBUTING.md`**, a code of conduct, issue forms and a pull request
+  template.
+
+### Changed
+
+- **The Go module path is now `github.com/phonginreallife/kernelseal`**, which
+  breaks any existing import of these packages. It was `kernelseal`, a path the
+  toolchain cannot resolve, so the packages could not be imported and the binaries
+  could not be installed with `go install`. The built binaries and the deployment
+  are unaffected.
+- The Kubernetes documentation now leads with the probe and the per-pod sidecar
+  rather than the DaemonSet. A node-wide agent serves one socket to every pod that
+  mounts it, and socket reachability is the authorization boundary.
+- `SECURITY.md` verification instructions now match what actually signs the
+  artifacts, and require `--certificate-identity` and `--certificate-oidc-issuer`.
+  Without both, `cosign verify` accepts a signature from any identity.
+
+### Fixed
+
+- **TruffleHog was scanning nothing.** Its `base` was the default branch, which on
+  a push to `main` resolves to the same commit as `head`, so it diffed a commit
+  against itself, reported zero bytes and passed. Pushes now scan the push range,
+  and the weekly run scans the full history.
+- **Gitleaks was failing** on a false positive in `scripts/run-node-demo.sh`, where
+  `curl-auth-header` matched a shell variable holding a locally-minted demo JWT.
+  Neither scanner had run since before 1.0.0, because GitHub had disabled the
+  Security workflow for inactivity.
+
 ## [1.0.0] - 2026-07-29
 
 First public release.
