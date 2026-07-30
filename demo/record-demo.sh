@@ -77,6 +77,20 @@ for f in build/kernelseal build/kernelseal-exec bpf/exec_monitor.bpf.o \
     fi
 done
 
+# Something has to actually attempt a ptrace attach. Checked up front rather
+# than at the point of use: a missing binary there prints an exec error into the
+# middle of the recording, which reads as KernelSeal failing rather than as the
+# kernel refusing the attach.
+if command -v gdb >/dev/null 2>&1; then
+    PTRACE_TOOL=gdb
+elif command -v strace >/dev/null 2>&1; then
+    PTRACE_TOOL=strace
+else
+    printf "${RED}Need gdb or strace to demonstrate the ptrace denial.${NC}\n" >&2
+    printf "  apt-get install -y gdb\n" >&2
+    exit 1
+fi
+
 cat > "$WORKDIR/config.yaml" <<'EOF'
 version: v1
 policy:
@@ -136,7 +150,11 @@ run "cat /proc/$APP_PID/mem"
 run "cat /proc/$APP_PID/maps"
 
 note "Even a debugger."
-run "timeout 3 gdb -p $APP_PID -batch -ex 'info registers' 2>&1 | tail -2"
+if [ "$PTRACE_TOOL" = gdb ]; then
+    run "timeout 5 gdb -p $APP_PID -batch -ex 'info registers' 2>&1 | tail -2"
+else
+    run "timeout 5 strace -p $APP_PID 2>&1 | head -2"
+fi
 
 printf "\n"
 note "id -u says 0. The kernel does not care."
