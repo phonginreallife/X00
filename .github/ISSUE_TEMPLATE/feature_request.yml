@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a change or an addition
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you would like KernelSeal to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: trust-boundary
+    attributes:
+      label: Effect on the trust boundary
+      description: |
+        KernelSeal makes a narrow claim: secrets are never readable from outside a
+        protected process, because protection is installed before they are
+        released. If your proposal changes who can request secrets, what the agent
+        trusts a caller to assert, or where plaintext exists, describe that here.
+        Answering "none" is a fine answer when it is true.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Including whether an existing mechanism covers it. `fileRef` reads a file
+        another process wrote, which already covers most secret backends.
+    validations:
+      required: false

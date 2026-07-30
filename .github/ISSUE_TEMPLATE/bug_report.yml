@@ -1,0 +1,91 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected vulnerability, do not file an issue. Follow
+        [SECURITY.md](https://github.com/phonginreallife/kernelseal/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the agent command line or the pod spec, and the config.
+      placeholder: |
+        1. Started the agent with ...
+        2. Ran ... through the shim
+        3. Observed ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: probe
+    attributes:
+      label: Node capability
+      description: |
+        Most reports come down to the kernel not having `bpf` as an active LSM.
+        Paste the output of the probe, or of these two commands if you are not on
+        Kubernetes.
+      placeholder: |
+        $ uname -r
+        $ cat /sys/kernel/security/lsm
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Agent logs
+      description: |
+        The startup lines matter as much as the failure. `[REGISTER] N secrets
+        registered` with N of 0 means the sources did not resolve, and nothing
+        downstream will be protected.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: KernelSeal version
+      description: The `Version:` line the agent logs at startup, not the image tag.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Policy mode
+      options:
+        - enforce
+        - audit
+        - disabled
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      description: |
+        Socket reachability is the authorization boundary, so which pattern you
+        run changes what the expected behavior is.
+      options:
+        - Sidecar, one agent per pod
+        - DaemonSet, one agent per node
+        - Host, no Kubernetes
+        - Docker compose demo
+    validations:
+      required: true

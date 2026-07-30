@@ -1,5 +1,10 @@
 # KernelSeal
 
+[![CI](https://github.com/phonginreallife/kernelseal/actions/workflows/ci.yaml/badge.svg)](https://github.com/phonginreallife/kernelseal/actions/workflows/ci.yaml)
+[![Security](https://github.com/phonginreallife/kernelseal/actions/workflows/security.yaml/badge.svg)](https://github.com/phonginreallife/kernelseal/actions/workflows/security.yaml)
+[![Release](https://img.shields.io/github/v/release/phonginreallife/kernelseal)](https://github.com/phonginreallife/kernelseal/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 **Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM**
 
 KernelSeal delivers application secrets directly into a process's environment at

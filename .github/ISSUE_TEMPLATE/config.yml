@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/phonginreallife/kernelseal/discussions
+    about: Ask about deployment, kernel requirements, or design before filing an issue.
+  - name: Report a vulnerability
+    url: https://github.com/phonginreallife/kernelseal/security/advisories/new
+    about: Private disclosure. Do not open a public issue for a security problem.
+  - name: Check whether a node can enforce
+    url: https://github.com/phonginreallife/kernelseal/blob/main/deploy/kernelseal-probe.yaml
+    about: Most "it does not block anything" reports are a kernel without bpf in its lsm= list. This answers that in 20 seconds.
