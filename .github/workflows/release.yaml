@@ -16,6 +16,9 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # Keyless signing exchanges this job's OIDC token for a short-lived
+      # Sigstore certificate, so there is no signing key to store or rotate.
+      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,6 +33,9 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Install BPF build dependencies
         run: bash scripts/ci-install-bpf-deps.sh "linux-headers-$(uname -r)" make
@@ -96,6 +102,7 @@ jobs:
           ls -la bpf/vmlinux.h
 
       - name: Build and push Docker image
+        id: image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -112,12 +119,52 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Sign the image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          # Signed by digest rather than by tag. Tags are mutable, so a
+          # signature bound to :v1.0.0 would still verify after that tag is
+          # moved to a different image; a digest names one specific image.
+          cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          format: spdx-json
+          output-file: dist/kernelseal-${{ github.ref_name }}-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach the SBOM to the image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          SBOM: dist/kernelseal-${{ github.ref_name }}-sbom.spdx.json
+        run: |
+          # Attached as an attestation as well as a release asset, so a
+          # deployment that only ever sees the digest can still recover the
+          # bill of materials without trusting this repository's file list.
+          cosign attest --yes --type spdxjson \
+            --predicate "$SBOM" \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Sign the release artifacts
+        run: |
+          # One signature over checksums.txt covers every tarball, since what
+          # the file contains is their SHA-256 hashes.
+          cosign sign-blob --yes \
+            --bundle dist/checksums.txt.cosign.bundle \
+            dist/checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
+            dist/checksums.txt.cosign.bundle
+            dist/*-sbom.spdx.json
           body_path: .github/release-notes/${{ github.ref_name }}.md
           generate_release_notes: false
           draft: false

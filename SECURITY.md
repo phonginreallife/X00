@@ -413,23 +413,61 @@ investigating.
 | Secret detection | Gitleaks, TruffleHog | Every commit |
 | Dockerfile best practices | Hadolint | Every PR |
 
-### Image Signing (Recommended)
+### Verifying a Release
+
+Release images and artifacts are signed with [cosign](https://github.com/sigstore/cosign)
+keyless signing. There is no public key to distribute: the signature carries a
+short-lived Sigstore certificate proving which GitHub workflow, in which
+repository, at which tag produced the artifact. That is what you verify against,
+so both flags below are required. `cosign verify` without them accepts a
+signature from *any* identity, which is the most common way this check is run
+and gets nothing out of it.
 
 ```bash
-# Sign images with cosign
-cosign sign --key cosign.key ghcr.io/your-org/kernelseal:v1.0.0
+IMAGE=ghcr.io/phonginreallife/kernelseal
+VERSION=v1.0.0
+IDENTITY="https://github.com/phonginreallife/kernelseal/.github/workflows/release.yaml@refs/tags/${VERSION}"
 
-# Verify before deployment
-cosign verify --key cosign.pub ghcr.io/your-org/kernelseal:v1.0.0
+cosign verify \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "${IMAGE}:${VERSION}"
 ```
 
-### SBOM Generation
+Signatures are attached to the image digest rather than the tag, because a tag
+can be moved to a different image afterwards while a digest cannot. To pin what
+you verified, resolve the digest and deploy that:
 
 ```bash
-# Generate Software Bill of Materials
-syft ghcr.io/your-org/kernelseal:v1.0.0 -o spdx-json > sbom.json
+crane digest "${IMAGE}:${VERSION}"    # sha256:...
+```
 
-# Scan SBOM for vulnerabilities
+The release tarballs are covered by a signature over `checksums.txt`, since that
+file contains their SHA-256 hashes:
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.cosign.bundle \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+sha256sum -c checksums.txt
+```
+
+### SBOM
+
+Every release publishes an SPDX SBOM, both as a release asset
+(`kernelseal-<version>-sbom.spdx.json`) and as a cosign attestation on the
+image, so a cluster that only knows the digest can still recover it:
+
+```bash
+cosign verify-attestation \
+  --type spdxjson \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "${IMAGE}:${VERSION}" | jq -r '.payload' | base64 -d | jq '.predicate' > sbom.json
+
 grype sbom:sbom.json
 ```
 
@@ -535,7 +573,10 @@ groups:
 
 ### Pre-Deployment
 
-- [ ] Confirm the kernel lists `bpf` in `/sys/kernel/security/lsm`
+- [ ] Confirm the kernel lists `bpf` in `/sys/kernel/security/lsm`, which
+      `deploy/kernelseal-probe.yaml` checks per node
+- [ ] Verify the image signature with both `--certificate-identity` and
+      `--certificate-oidc-issuer`, and deploy the digest you verified
 - [ ] Review and customize policy configuration
 - [ ] Configure the binary allowlist for your applications
 - [ ] Set up secret source (Vault, K8s Secrets, etc.)
