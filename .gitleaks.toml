@@ -23,7 +23,12 @@ tags = ["kernelseal", "database", "password"]
 [[rules]]
 id = "vault-token"
 description = "HashiCorp Vault Token"
-regex = '''(?:hvs\.[a-zA-Z0-9_-]{25,}|s\.[a-zA-Z0-9]{24})'''
+# Anchored on a word boundary so the legacy "s.<24 chars>" form cannot match
+# inside an identifier. Without it the rule fires on ordinary Go field access:
+# p.Status.EphemeralContainerStatuses contains "s.EphemeralContainerStatuses",
+# which is "s." followed by 26 alphanumerics. A real token is always its own
+# word, so the boundary costs no detection.
+regex = '''\b(?:hvs\.[a-zA-Z0-9_-]{25,}|s\.[a-zA-Z0-9]{24})'''
 tags = ["vault", "token"]
 
 [[rules]]

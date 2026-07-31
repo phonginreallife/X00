@@ -475,15 +475,19 @@ func TestParsePodIdentity(t *testing.T) {
 	}
 }
 
-// A typo in the setting that governs authorization must fail closed. Falling back
-// to the default would silently widen who can be served.
+// An unrecognized value in the setting that governs authorization must fail
+// closed. Falling back to the default would silently widen who can be served, and
+// "strict" is exactly the kind of plausible-sounding value an operator writes
+// while expecting it to be at least as restrictive as required.
 func TestParsePodIdentity_UnknownValueFailsClosed(t *testing.T) {
-	got, err := parsePodIdentity("requried")
-	if err == nil {
-		t.Error("expected an error for an unrecognized mode")
-	}
-	if got != PodIdentityRequired {
-		t.Errorf("mode = %v, want required so an unreadable setting cannot widen access", got)
+	for _, in := range []string{"strict", "enforce", "true", "on"} {
+		got, err := parsePodIdentity(in)
+		if err == nil {
+			t.Errorf("parsePodIdentity(%q) returned no error for an unrecognized mode", in)
+		}
+		if got != PodIdentityRequired {
+			t.Errorf("parsePodIdentity(%q) = %v, want required so an unreadable setting cannot widen access", in, got)
+		}
 	}
 }
 
