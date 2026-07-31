@@ -198,9 +198,13 @@ func TestShimDelivery_ProtectionSurvivesExec(t *testing.T) {
 	})
 
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("sleep", []secrets.Secret{
-		{Name: "TEST_SECRET", Value: "must-not-be-readable"},
-	})
+	registry.Replace([]secrets.Binding{{
+		Name:     "sleep",
+		Selector: secrets.Selector{Binary: "sleep"},
+		Secrets: []secrets.Secret{
+			{Name: "TEST_SECRET", Value: "must-not-be-readable"},
+		},
+	}})
 	socketPath := startServer(t, registry, mgr, true)
 
 	_, pid := startShim(t, socketPath, "sleep", "30")

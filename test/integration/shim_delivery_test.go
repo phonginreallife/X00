@@ -105,7 +105,7 @@ func startServer(t *testing.T, registry *secrets.Registry, protector server.Prot
 		SocketPath:        socketPath,
 		SocketMode:        0o666, // the test process may run as any uid
 		RequireProtection: requireProtection,
-	}, registry, protector)
+	}, registry, protector, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -168,10 +168,14 @@ func envValue(output, name string) (string, bool) {
 // environment variables, without the secret ever touching the filesystem.
 func TestShimDelivery_SecretsReachTargetEnvironment(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("env", []secrets.Secret{
-		{Name: "TEST_SECRET", Value: "integration-test-value"},
-		{Name: "TEST_TOKEN", Value: "second-value"},
-	})
+	registry.Replace([]secrets.Binding{{
+		Name:     "env",
+		Selector: secrets.Selector{Binary: "env"},
+		Secrets: []secrets.Secret{
+			{Name: "TEST_SECRET", Value: "integration-test-value"},
+			{Name: "TEST_TOKEN", Value: "second-value"},
+		},
+	}})
 
 	protector := &stubProtector{}
 	socketPath := startServer(t, registry, protector, true)
@@ -226,9 +230,13 @@ func TestShimDelivery_NoSecretsBoundStillExecs(t *testing.T) {
 // guard them, and the shim must refuse to start rather than run unprotected.
 func TestShimDelivery_FailsClosedWhenProtectionUnavailable(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("env", []secrets.Secret{
-		{Name: "TEST_SECRET", Value: "must-not-leak"},
-	})
+	registry.Replace([]secrets.Binding{{
+		Name:     "env",
+		Selector: secrets.Selector{Binary: "env"},
+		Secrets: []secrets.Secret{
+			{Name: "TEST_SECRET", Value: "must-not-leak"},
+		},
+	}})
 
 	protector := &stubProtector{failProtect: true}
 	socketPath := startServer(t, registry, protector, true)
@@ -309,9 +317,13 @@ func TestShimDelivery_UnprivilegedCallerReachesRootSocket(t *testing.T) {
 	}
 
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("env", []secrets.Secret{
-		{Name: "TEST_SECRET", Value: "reached-across-privilege-boundary"},
-	})
+	registry.Replace([]secrets.Binding{{
+		Name:     "env",
+		Selector: secrets.Selector{Binary: "env"},
+		Secrets: []secrets.Secret{
+			{Name: "TEST_SECRET", Value: "reached-across-privilege-boundary"},
+		},
+	}})
 
 	dir, err := os.MkdirTemp("/tmp", "ks-priv-*")
 	if err != nil {
@@ -327,7 +339,7 @@ func TestShimDelivery_UnprivilegedCallerReachesRootSocket(t *testing.T) {
 		// Without this the socket stays root:root and the connect below fails.
 		SocketGroup:       nobody.Gid,
 		RequireProtection: false,
-	}, registry, &stubProtector{})
+	}, registry, &stubProtector{}, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)

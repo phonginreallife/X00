@@ -42,7 +42,18 @@ func newServer(t *testing.T, registry *secrets.Registry, p Protector, requirePro
 	return New(Config{
 		SocketPath:        t.TempDir() + "/s.sock",
 		RequireProtection: requireProtection,
-	}, registry, p)
+	}, registry, p, nil)
+}
+
+// unresolvedBinding is a binding for "node" whose sources all failed, which is
+// the shape these tests are about.
+func unresolvedBinding(resolved []secrets.Secret, unresolved ...string) secrets.Binding {
+	return secrets.Binding{
+		Name:       "node-secrets",
+		Selector:   secrets.Selector{Binary: "node"},
+		Secrets:    resolved,
+		Unresolved: unresolved,
+	}
 }
 
 // A binary with nothing configured is not an error and must stay quiet: the shim
@@ -69,8 +80,7 @@ func TestHandle_NoBindingIsQuiet(t *testing.T) {
 // secrets AND no protection, silently, even in enforce mode.
 func TestHandle_AllSecretsUnresolvedIsDeniedWhenProtectionRequired(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("node", nil)
-	registry.SetUnresolved("node", []string{"JWT_SECRET", "API_KEY"})
+	registry.Replace([]secrets.Binding{unresolvedBinding(nil, "JWT_SECRET", "API_KEY")})
 
 	p := &recordingProtector{}
 	srv := newServer(t, registry, p, true)
@@ -94,8 +104,7 @@ func TestHandle_AllSecretsUnresolvedIsDeniedWhenProtectionRequired(t *testing.T)
 // Outside enforce mode the process still starts, but the operator must be told.
 func TestHandle_AllSecretsUnresolvedWarnsWhenProtectionOptional(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("node", nil)
-	registry.SetUnresolved("node", []string{"JWT_SECRET"})
+	registry.Replace([]secrets.Binding{unresolvedBinding(nil, "JWT_SECRET")})
 
 	srv := newServer(t, registry, &recordingProtector{}, false)
 
@@ -116,8 +125,9 @@ func TestHandle_AllSecretsUnresolvedWarnsWhenProtectionOptional(t *testing.T) {
 // app is missing a secret its config says it needs, so it must warn.
 func TestHandle_PartialResolutionServesAndWarns(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("node", []secrets.Secret{{Name: "JWT_SECRET", Value: "v"}})
-	registry.SetUnresolved("node", []string{"API_KEY"})
+	registry.Replace([]secrets.Binding{
+		unresolvedBinding([]secrets.Secret{{Name: "JWT_SECRET", Value: "v"}}, "API_KEY"),
+	})
 
 	p := &recordingProtector{}
 	srv := newServer(t, registry, p, true)
@@ -145,8 +155,7 @@ func TestHandle_PartialResolutionServesAndWarns(t *testing.T) {
 // binary permanently denied.
 func TestHandle_ResolvingLaterClearsTheDenial(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("node", nil)
-	registry.SetUnresolved("node", []string{"API_KEY"})
+	registry.Replace([]secrets.Binding{unresolvedBinding(nil, "API_KEY")})
 
 	srv := newServer(t, registry, &recordingProtector{}, true)
 
@@ -154,8 +163,9 @@ func TestHandle_ResolvingLaterClearsTheDenial(t *testing.T) {
 		t.Fatal("expected the first request to be denied")
 	}
 
-	registry.RegisterForBinary("node", []secrets.Secret{{Name: "API_KEY", Value: "v"}})
-	registry.SetUnresolved("node", nil)
+	registry.Replace([]secrets.Binding{
+		unresolvedBinding([]secrets.Secret{{Name: "API_KEY", Value: "v"}}),
+	})
 
 	resp := srv.handle(selfCred(t), request("node"))
 	if !resp.OK || resp.Warning != "" {

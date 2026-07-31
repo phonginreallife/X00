@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/phonginreallife/kernelseal/internal"
 	"github.com/phonginreallife/kernelseal/internal/bpf"
+	"github.com/phonginreallife/kernelseal/internal/cgroup"
+	"github.com/phonginreallife/kernelseal/internal/identity"
+	"github.com/phonginreallife/kernelseal/internal/kube"
 	"github.com/phonginreallife/kernelseal/internal/logging"
 	"github.com/phonginreallife/kernelseal/internal/metrics"
 	"github.com/phonginreallife/kernelseal/internal/protocol"
@@ -38,6 +42,10 @@ func main() {
 	socketMode := flag.Uint("socket-mode", 0o660, "File mode for the secret delivery socket")
 	socketGroup := flag.String("socket-group", "",
 		"Group (name or GID) to own the secret delivery socket, so unprivileged callers can reach it")
+	procRoot := flag.String("proc-root", cgroup.DefaultProcRoot,
+		"Procfs mount used to read a caller's cgroup membership; set to /host/proc when procfs is bind-mounted")
+	cgroupRoot := flag.String("cgroup-root", cgroup.DefaultRoot,
+		"Unified cgroup hierarchy mount, used to resolve a caller's cgroup id")
 	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -102,15 +110,23 @@ func main() {
 	})
 	bpfManager.Start()
 
+	identityMode := policyManager.PodIdentityMode()
+	identifier, podWatcher := startIdentity(identityMode, *procRoot, *cgroupRoot)
+	if podWatcher != nil {
+		defer podWatcher.Stop()
+	}
+
 	// Secrets are only released once the caller is marked protected, so refuse
 	// to hand them out at all when enforcement was requested but is unavailable.
 	requireProtection := policy.EnforceMode == types.ModeEnforce
 	secretServer := server.New(server.Config{
-		SocketPath:        *socketPath,
-		SocketMode:        os.FileMode(*socketMode),
-		SocketGroup:       *socketGroup,
-		RequireProtection: requireProtection,
-	}, registry, bpfManager)
+		SocketPath:         *socketPath,
+		SocketMode:         os.FileMode(*socketMode),
+		SocketGroup:        *socketGroup,
+		RequireProtection:  requireProtection,
+		IdentifyCallers:    identityMode != internal.PodIdentityDisabled,
+		RequirePodIdentity: identityMode == internal.PodIdentityRequired,
+	}, registry, bpfManager, identifier)
 
 	secretServer.SetIssuedCallback(func(_ uint32, names []string) {
 		collector.RecordSecretsIssued(len(names))
@@ -133,6 +149,14 @@ func main() {
 		}
 		return 0
 	})
+	// In required mode a cold or empty pod cache means every request is refused,
+	// so this is the gauge that explains an agent that looks healthy while nothing
+	// it guards can start.
+	if podWatcher != nil {
+		collector.SetGauge("kernelseal_pods_watched", func() float64 {
+			return float64(podWatcher.Len())
+		})
+	}
 	collector.SetGauge("kernelseal_protected_pids", func() float64 {
 		pids, err := bpfManager.ListProtectedPIDs()
 		if err != nil {
@@ -164,6 +188,91 @@ func main() {
 	secretServer.Close()
 	bpfManager.Stop()
 	log.Println("[DONE] KernelSeal stopped")
+}
+
+// startIdentity brings up caller identification for the active mode.
+//
+// The pod watcher is what turns a cgroup into a namespace and a set of labels, so
+// without it only cgroupPath selectors can match. In required mode that is not a
+// degraded state worth continuing from: every request would be refused, and an
+// agent that refuses everything is better as a startup failure than as a pod that
+// looks healthy while nothing it guards can start.
+func startIdentity(mode internal.PodIdentityMode, procRoot, cgroupRoot string) (*identity.Resolver, *kube.Watcher) {
+	if mode == internal.PodIdentityDisabled {
+		log.Println("[IDENTITY] Disabled: bindings are selected by the binary name the caller claims.")
+		log.Println("[IDENTITY]   Any process that can reach the socket can request any binding by naming it.")
+		return nil, nil
+	}
+
+	cgroups := cgroup.NewResolver(procRoot, cgroupRoot)
+	warnIfOwnCgroupNamespaced(cgroups)
+
+	if !kube.InCluster() {
+		if mode == internal.PodIdentityRequired {
+			log.Fatalln("[ERROR] policy.podIdentity is required but this agent is not running in a " +
+				"cluster, so no caller can be attributed to a pod and every request would be refused.")
+		}
+		log.Println("[IDENTITY] Not running in a cluster; callers are identified by cgroup only.")
+		log.Println("[IDENTITY]   Bindings that select on namespace, labels or container will match nothing.")
+		return identity.New(cgroups, nil), nil
+	}
+
+	watcher, err := kube.NewWatcher(kube.Config{NodeName: os.Getenv("NODE_NAME")})
+	if err != nil {
+		if mode == internal.PodIdentityRequired {
+			log.Fatalf("[ERROR] policy.podIdentity is required but the pod watcher could not "+
+				"be created: %v", err)
+		}
+		log.Printf("[WARN] Pod watcher unavailable, callers are identified by cgroup only: %v", err)
+		return identity.New(cgroups, nil), nil
+	}
+
+	if err := watcher.Start(context.Background()); err != nil {
+		if mode == internal.PodIdentityRequired {
+			log.Fatalf("[ERROR] policy.podIdentity is required but the initial pod list failed: %v", err)
+		}
+		log.Printf("[WARN] Pod watcher did not start, callers are identified by cgroup only: %v", err)
+		return identity.New(cgroups, nil), nil
+	}
+
+	log.Printf("[IDENTITY] Mode %s: callers are attributed to a pod before any binding matches", mode)
+	return identity.New(cgroups, watcher), watcher
+}
+
+// warnIfOwnCgroupNamespaced reports a cgroup namespace that will make cgroupPath
+// selectors unusable.
+//
+// The kernel renders /proc/<pid>/cgroup relative to the *reading* process's
+// cgroup namespace. An agent with its own namespace therefore sees other pods as
+// "/../kubepods.slice/...", which cannot be compared against a configured path.
+// Pod attribution still works, because the pod UID is parsed from a path segment,
+// so this is a warning rather than a refusal. It is checked at startup because
+// the alternative is discovering it as a stream of unexplained denials.
+func warnIfOwnCgroupNamespaced(cgroups *cgroup.Resolver) {
+	// #nosec G115 - a PID is always positive and fits in uint32
+	own, err := cgroups.Resolve(uint32(os.Getpid())) //nolint:gosec
+	if err != nil && !errors.Is(err, cgroup.ErrNoID) {
+		log.Printf("[WARN] Could not read this agent's own cgroup: %v", err)
+		return
+	}
+
+	log.Printf("[IDENTITY] Agent cgroup: %s", own.Path)
+
+	if own.Path != "/" {
+		return
+	}
+
+	// A root cgroup path is either a host with no cgroup delegation, which is
+	// fine, or a container in its own cgroup namespace, which is not.
+	if !kube.InCluster() {
+		return
+	}
+
+	log.Println("[WARN] This agent sees its own cgroup as \"/\", which means it has its own cgroup")
+	log.Println("[WARN]   namespace. Callers' cgroup paths will be rendered relative to it, so")
+	log.Println("[WARN]   cgroupPath selectors cannot match and will refuse.")
+	log.Println("[WARN]   Pod attribution is unaffected: select on namespace and labels instead,")
+	log.Println("[WARN]   or run the agent in the host's cgroup namespace.")
 }
 
 // applyLogLevel honors monitoring.logLevel from the configuration.

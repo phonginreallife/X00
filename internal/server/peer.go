@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/phonginreallife/kernelseal/internal/secrets"
 )
 
 // peerCred returns the kernel's view of who is on the other end of a unix
@@ -103,4 +105,19 @@ func describePeer(cred *syscall.Ucred) string {
 	pid := uint32(cred.Pid)
 	return fmt.Sprintf("pid=%d uid=%d gid=%d exe=%s cgroup=%s",
 		pid, cred.Uid, cred.Gid, processExe(pid), processCgroup(pid))
+}
+
+// describeCaller appends the resolved pod identity to a peer description. A
+// denial that names only a PID is close to useless on a busy node, where the
+// process is usually gone by the time anyone reads the log.
+func describeCaller(peer string, caller secrets.Caller) string {
+	if caller.Pod != nil {
+		return fmt.Sprintf("%s pod=%s/%s poduid=%s container=%s",
+			peer, caller.Pod.Namespace, caller.Pod.Name, caller.PodUID,
+			caller.Pod.Containers[caller.ContainerID])
+	}
+	if caller.PodUID != "" {
+		return fmt.Sprintf("%s poduid=%s (not in this node's pod cache)", peer, caller.PodUID)
+	}
+	return peer + " pod=none"
 }

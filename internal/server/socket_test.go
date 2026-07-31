@@ -36,7 +36,7 @@ func TestListen_AppliesSocketMode(t *testing.T) {
 	socketPath := filepath.Join(shortSocketDir(t), "s.sock")
 
 	srv := New(Config{SocketPath: socketPath, SocketMode: 0o660},
-		secrets.NewRegistry(), noopProtector{})
+		secrets.NewRegistry(), noopProtector{}, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -56,7 +56,7 @@ func TestListen_DefaultsSocketMode(t *testing.T) {
 	socketPath := filepath.Join(shortSocketDir(t), "s.sock")
 
 	// A zero mode must not produce an inaccessible socket.
-	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{})
+	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{}, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -80,7 +80,7 @@ func TestListen_ReplacesStaleSocket(t *testing.T) {
 		t.Fatalf("creating stale socket file: %v", err)
 	}
 
-	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{})
+	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{}, nil)
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen over a stale socket: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestListen_ReplacesStaleSocket(t *testing.T) {
 func TestListen_CreatesParentDirectory(t *testing.T) {
 	socketPath := filepath.Join(shortSocketDir(t), "nested", "s.sock")
 
-	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{})
+	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{}, nil)
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestListen_UnknownSocketGroupFails(t *testing.T) {
 	srv := New(Config{
 		SocketPath:  socketPath,
 		SocketGroup: "definitely-not-a-real-group-name",
-	}, secrets.NewRegistry(), noopProtector{})
+	}, secrets.NewRegistry(), noopProtector{}, nil)
 
 	if err := srv.Listen(); err == nil {
 		srv.Close()
@@ -124,7 +124,7 @@ func TestListen_AppliesNumericSocketGroup(t *testing.T) {
 	srv := New(Config{
 		SocketPath:  socketPath,
 		SocketGroup: strconv.Itoa(gid),
-	}, secrets.NewRegistry(), noopProtector{})
+	}, secrets.NewRegistry(), noopProtector{}, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen with a numeric group: %v", err)
@@ -145,7 +145,7 @@ func TestListen_AppliesSocketGroupToParentDirectory(t *testing.T) {
 	srv := New(Config{
 		SocketPath:  socketPath,
 		SocketGroup: strconv.Itoa(gid),
-	}, secrets.NewRegistry(), noopProtector{})
+	}, secrets.NewRegistry(), noopProtector{}, nil)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -195,7 +195,7 @@ func TestLookupGID_Unknown(t *testing.T) {
 func TestClose_Idempotent(t *testing.T) {
 	socketPath := filepath.Join(shortSocketDir(t), "s.sock")
 
-	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{})
+	srv := New(Config{SocketPath: socketPath}, secrets.NewRegistry(), noopProtector{}, nil)
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

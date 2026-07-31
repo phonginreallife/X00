@@ -296,26 +296,28 @@ policy:
 func TestPolicyManager_SecretsFor_NoRegistry(t *testing.T) {
 	pm := NewPolicyManager(nil)
 
-	result := pm.SecretsFor("myapp", 12345)
-	if result != nil {
-		t.Errorf("Expected nil secrets when no registry, got %v", result)
+	result := pm.SecretsFor("myapp", secrets.Caller{})
+	if !result.Empty() {
+		t.Errorf("Expected an empty match when no registry, got %+v", result)
 	}
 }
 
 func TestPolicyManager_SecretsFor_WithRegistry(t *testing.T) {
 	registry := secrets.NewRegistry()
-	registry.RegisterForBinary("myapp", []secrets.Secret{
-		{Name: "DB_PASSWORD", Value: "secret123"},
-	})
+	registry.Replace([]secrets.Binding{{
+		Name:     "myapp",
+		Selector: secrets.Selector{Binary: "myapp"},
+		Secrets:  []secrets.Secret{{Name: "DB_PASSWORD", Value: "secret123"}},
+	}})
 
 	pm := NewPolicyManager(registry)
 
-	result := pm.SecretsFor("myapp", 0)
-	if len(result) != 1 {
-		t.Fatalf("Expected 1 secret, got %d", len(result))
+	result := pm.SecretsFor("myapp", secrets.Caller{})
+	if len(result.Secrets) != 1 {
+		t.Fatalf("Expected 1 secret, got %d", len(result.Secrets))
 	}
-	if result[0].Name != "DB_PASSWORD" {
-		t.Errorf("Secret name = %v, want DB_PASSWORD", result[0].Name)
+	if result.Secrets[0].Name != "DB_PASSWORD" {
+		t.Errorf("Secret name = %v, want DB_PASSWORD", result.Secrets[0].Name)
 	}
 }
 
@@ -436,14 +438,233 @@ secrets:
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
 
-	result := registry.Lookup("postgres", 0)
-	if len(result) != 1 {
-		t.Fatalf("Expected 1 secret, got %d", len(result))
+	result := registry.Lookup("postgres", secrets.Caller{})
+	if len(result.Secrets) != 1 {
+		t.Fatalf("Expected 1 secret, got %d", len(result.Secrets))
 	}
-	if result[0].Name != "PGPASSWORD" {
-		t.Errorf("Secret name = %v, want PGPASSWORD", result[0].Name)
+	if result.Secrets[0].Name != "PGPASSWORD" {
+		t.Errorf("Secret name = %v, want PGPASSWORD", result.Secrets[0].Name)
 	}
-	if result[0].Value != "testpassword" {
-		t.Errorf("Secret value = %v, want testpassword", result[0].Value)
+	if result.Secrets[0].Value != "testpassword" {
+		t.Errorf("Secret value = %v, want testpassword", result.Secrets[0].Value)
+	}
+}
+
+func TestParsePodIdentity(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    PodIdentityMode
+		wantErr bool
+	}{
+		{"", PodIdentityPreferred, false},
+		{"preferred", PodIdentityPreferred, false},
+		{"required", PodIdentityRequired, false},
+		{"disabled", PodIdentityDisabled, false},
+		{"  Required  ", PodIdentityRequired, false},
+		{"REQUIRED", PodIdentityRequired, false},
+	}
+
+	for _, tt := range tests {
+		got, err := parsePodIdentity(tt.in)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parsePodIdentity(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+		}
+		if got != tt.want {
+			t.Errorf("parsePodIdentity(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+// A typo in the setting that governs authorization must fail closed. Falling back
+// to the default would silently widen who can be served.
+func TestParsePodIdentity_UnknownValueFailsClosed(t *testing.T) {
+	got, err := parsePodIdentity("requried")
+	if err == nil {
+		t.Error("expected an error for an unrecognized mode")
+	}
+	if got != PodIdentityRequired {
+		t.Errorf("mode = %v, want required so an unreadable setting cannot widen access", got)
+	}
+}
+
+func TestPodIdentityMode_String(t *testing.T) {
+	cases := map[PodIdentityMode]string{
+		PodIdentityPreferred: "preferred",
+		PodIdentityRequired:  "required",
+		PodIdentityDisabled:  "disabled",
+	}
+	for mode, want := range cases {
+		if got := mode.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestRejectionFor(t *testing.T) {
+	binaryOnly := secrets.Selector{Binary: "node"}
+	podScoped := secrets.Selector{Binary: "node", Namespace: "payments"}
+
+	// In required mode a binary-only binding is claimable by any pod that reaches
+	// the socket, which is the whole exposure, so it must not be servable.
+	if got := rejectionFor(binaryOnly, PodIdentityRequired); got == "" {
+		t.Error("a binary-only binding was accepted in required mode")
+	}
+	if got := rejectionFor(podScoped, PodIdentityRequired); got != "" {
+		t.Errorf("a pod-scoped binding was rejected in required mode: %s", got)
+	}
+
+	// Preferred mode serves both shapes: the sidecar's socket is already scoped.
+	if got := rejectionFor(binaryOnly, PodIdentityPreferred); got != "" {
+		t.Errorf("a binary-only binding was rejected in preferred mode: %s", got)
+	}
+	if got := rejectionFor(podScoped, PodIdentityPreferred); got != "" {
+		t.Errorf("a pod-scoped binding was rejected in preferred mode: %s", got)
+	}
+
+	// With identification off, a pod-scoped selector can never be evaluated, so
+	// accepting it would mean a binding that silently matches nothing.
+	if got := rejectionFor(podScoped, PodIdentityDisabled); got == "" {
+		t.Error("a pod-scoped binding was accepted with podIdentity disabled")
+	}
+	if got := rejectionFor(binaryOnly, PodIdentityDisabled); got != "" {
+		t.Errorf("a binary-only binding was rejected with podIdentity disabled: %s", got)
+	}
+
+	// A selector that names nothing matches nothing, in any mode.
+	for _, mode := range []PodIdentityMode{PodIdentityRequired, PodIdentityPreferred, PodIdentityDisabled} {
+		if got := rejectionFor(secrets.Selector{}, mode); got == "" {
+			t.Errorf("an empty selector was accepted in %s mode", mode)
+		}
+	}
+}
+
+// The end-to-end config path: a binary-only binding loaded under required mode
+// must reach the registry marked rejected, not simply dropped. Dropping it would
+// make the binary look unconfigured, which starts the app unprotected in silence.
+func TestLoadConfig_RejectsBinaryOnlyBindingInRequiredMode(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/config.yaml"
+	configContent := `
+version: v1
+policy:
+  mode: enforce
+  podIdentity: required
+secrets:
+  - name: myapp-secrets
+    selector:
+      binary: "node"
+    secretRefs:
+      - name: API_KEY
+        source:
+          value: "literal"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	registry := secrets.NewRegistry()
+	pm := NewPolicyManager(registry)
+	if err := pm.LoadConfig(configPath); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if pm.PodIdentityMode() != PodIdentityRequired {
+		t.Fatalf("mode = %v, want required", pm.PodIdentityMode())
+	}
+
+	got := registry.Lookup("node", secrets.Caller{})
+	if len(got.Secrets) != 0 {
+		t.Errorf("a binary-only binding served %d secret(s) in required mode", len(got.Secrets))
+	}
+	if len(got.Rejected) != 1 {
+		t.Errorf("Rejected = %v, want the binding named so delivery can refuse loudly", got.Rejected)
+	}
+	if got.Empty() {
+		t.Error("the match reports Empty, so the binary would look unconfigured")
+	}
+}
+
+// The same config under the default mode is served, so the sidecar path keeps
+// working exactly as it did in 1.1.0.
+func TestLoadConfig_ServesBinaryOnlyBindingByDefault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/config.yaml"
+	configContent := `
+version: v1
+policy:
+  mode: enforce
+secrets:
+  - name: myapp-secrets
+    selector:
+      binary: "node"
+    secretRefs:
+      - name: API_KEY
+        source:
+          value: "literal"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	registry := secrets.NewRegistry()
+	pm := NewPolicyManager(registry)
+	if err := pm.LoadConfig(configPath); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if pm.PodIdentityMode() != PodIdentityPreferred {
+		t.Errorf("default mode = %v, want preferred", pm.PodIdentityMode())
+	}
+
+	got := registry.Lookup("node", secrets.Caller{})
+	if len(got.Secrets) != 1 || got.Secrets[0].Name != "API_KEY" {
+		t.Errorf("secrets = %+v, want API_KEY served under the default mode", got.Secrets)
+	}
+}
+
+// Pod selectors have to survive parsing and reach the registry, or matching would
+// silently fall back to the binary name.
+func TestLoadConfig_CarriesPodSelectorsIntoTheRegistry(t *testing.T) {
+	dir := t.TempDir()
+	configPath := dir + "/config.yaml"
+	configContent := `
+version: v1
+policy:
+  mode: enforce
+  podIdentity: required
+secrets:
+  - name: checkout-db
+    selector:
+      binary: "node"
+      namespace: "payments"
+      container: "server"
+      labels:
+        app: checkout
+    secretRefs:
+      - name: DB_PASSWORD
+        source:
+          value: "hunter2"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	registry := secrets.NewRegistry()
+	pm := NewPolicyManager(registry)
+	if err := pm.LoadConfig(configPath); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	// A caller with no pod identity must be refused by every one of those
+	// constraints rather than matching on the binary name.
+	got := registry.Lookup("node", secrets.Caller{})
+	if len(got.Secrets) != 0 {
+		t.Errorf("released %d secret(s) to a caller with no pod identity", len(got.Secrets))
+	}
+	if len(got.Refused) != 1 {
+		t.Errorf("Refused = %v, want the binding refused on identity", got.Refused)
+	}
+	if len(got.Rejected) != 0 {
+		t.Errorf("Rejected = %v, want none: the binding is well formed", got.Rejected)
 	}
 }

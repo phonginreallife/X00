@@ -50,6 +50,65 @@ type PolicySpec struct {
 	// When enabled, only processes matching configured binaries will be monitored
 	// This significantly reduces overhead for systems with many processes
 	KernelBinaryFilter bool `yaml:"kernelBinaryFilter" json:"kernelBinaryFilter"`
+
+	// PodIdentity decides how much the agent must know about a caller before it
+	// will release anything. See PodIdentityMode.
+	PodIdentity string `yaml:"podIdentity" json:"podIdentity"`
+}
+
+// PodIdentityMode says how a caller must be identified before secrets are
+// released to it.
+//
+// The binary name in a request is a claim, so a binding selected by binary alone
+// is served to anything that can open the socket and name it. Whether that is
+// acceptable depends entirely on who can reach the socket, which is a deployment
+// question the agent cannot answer for itself.
+type PodIdentityMode int
+
+const (
+	// PodIdentityPreferred resolves the caller's pod when it can and enforces
+	// every pod-scoped selector against it, but still serves bindings that carry
+	// no pod selector. Correct for the per-pod sidecar, where the socket is
+	// already scoped to one pod and the binary name only picks among that pod's
+	// own bindings.
+	PodIdentityPreferred PodIdentityMode = iota
+
+	// PodIdentityRequired refuses to serve anything it cannot attribute to a pod,
+	// and refuses bindings that name no pod at all. Correct for a node-wide agent,
+	// where the socket is reachable by every pod that mounts it and the binary
+	// name would otherwise be the only thing standing between them.
+	PodIdentityRequired
+
+	// PodIdentityDisabled does not resolve callers at all. Bindings are selected
+	// by binary name alone, which is the 1.1.0 behavior.
+	PodIdentityDisabled
+)
+
+func (m PodIdentityMode) String() string {
+	switch m {
+	case PodIdentityRequired:
+		return "required"
+	case PodIdentityDisabled:
+		return "disabled"
+	default:
+		return "preferred"
+	}
+}
+
+// parsePodIdentity maps the configured string to a mode. An unrecognized value
+// selects required rather than the default, because a typo in the setting that
+// governs authorization must not quietly widen it.
+func parsePodIdentity(s string) (PodIdentityMode, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "preferred":
+		return PodIdentityPreferred, nil
+	case "required":
+		return PodIdentityRequired, nil
+	case "disabled":
+		return PodIdentityDisabled, nil
+	default:
+		return PodIdentityRequired, fmt.Errorf("unknown podIdentity %q; want required, preferred or disabled", s)
+	}
 }
 
 // SecretBinding binds secrets to specific processes
@@ -131,6 +190,11 @@ func DefaultConfig() *KernelSealConfig {
 			AllowSelfRead:      true,
 			AuditAll:           false,
 			KernelBinaryFilter: true, // Enable kernel-side filtering by default
+
+			// Preferred, not required, because the default cannot know who can
+			// reach the socket. The per-pod sidecar scopes it to one pod already;
+			// the node-wide DaemonSet does not, and its manifest sets required.
+			PodIdentity: "preferred",
 		},
 		Secrets: []SecretBinding{},
 		Monitoring: MonitoringConfig{
@@ -261,7 +325,15 @@ func (pm *PolicyManager) applyPolicy() {
 		cb(policy)
 	}
 
-	log.Printf("[CONFIG] Policy applied: mode=%s", mode)
+	identity := pm.PodIdentityMode()
+	log.Printf("[CONFIG] Policy applied: mode=%s podIdentity=%s", mode, identity)
+
+	if identity != PodIdentityRequired {
+		log.Printf("[CONFIG] Bindings without a pod selector are served to any caller that " +
+			"can reach the socket and name the binary.")
+		log.Printf("[CONFIG]   That is scoped to one pod only if the socket is. On a node-wide " +
+			"agent set policy.podIdentity: required.")
+	}
 }
 
 func (pm *PolicyManager) loadSecrets() {
@@ -269,46 +341,100 @@ func (pm *PolicyManager) loadSecrets() {
 		return
 	}
 
-	for _, binding := range pm.config.Secrets {
-		secretsList := make([]secrets.Secret, 0, len(binding.SecretRefs))
-		var unresolved []string
+	mode := pm.PodIdentityMode()
+	built := make([]secrets.Binding, 0, len(pm.config.Secrets))
+
+	for i, binding := range pm.config.Secrets {
+		name := binding.Name
+		if name == "" {
+			name = fmt.Sprintf("secrets[%d]", i)
+		}
+
+		selector := secrets.Selector{
+			Binary:     binding.Selector.Binary,
+			Container:  binding.Selector.Container,
+			Namespace:  binding.Selector.Namespace,
+			Labels:     binding.Selector.Labels,
+			CgroupPath: binding.Selector.CgroupPath,
+		}
+
+		out := secrets.Binding{Name: name, Selector: selector}
 
 		for _, ref := range binding.SecretRefs {
 			value, err := pm.resolveSecretValue(ref.Source)
 			if err != nil {
 				log.Printf("[WARN] Failed to resolve secret %s: %v", ref.Name, err)
-				unresolved = append(unresolved, ref.Name)
+				out.Unresolved = append(out.Unresolved, ref.Name)
 				continue
 			}
-
-			secretsList = append(secretsList, secrets.Secret{
-				Name:  ref.Name,
-				Value: value,
-			})
+			out.Secrets = append(out.Secrets, secrets.Secret{Name: ref.Name, Value: value})
 		}
 
-		// Register secrets based on selector
-		if binding.Selector.Binary != "" {
-			pm.registry.RegisterForBinary(binding.Selector.Binary, secretsList)
+		out.Rejected = rejectionFor(selector, mode)
+		if out.Rejected != "" {
+			log.Printf("[DENY] Binding %q will not be served: %s", name, out.Rejected)
+		}
 
-			// Remember the failures too. The delivery path needs them to tell a
-			// misconfigured binding apart from a binary that has no secrets, and
-			// a startup [WARN] is easy to miss on a busy host.
-			pm.registry.SetUnresolved(binding.Selector.Binary, unresolved)
-
-			if len(unresolved) > 0 {
-				log.Printf("[WARN] Binary %q has %d unresolved secret(s): %v",
-					binding.Selector.Binary, len(unresolved), unresolved)
-				if len(secretsList) == 0 {
-					log.Printf("[WARN]   every secret for %q failed to resolve, so it will "+
-						"not be protected; requests will be refused in enforce mode",
-						binding.Selector.Binary)
-				}
+		if len(out.Unresolved) > 0 {
+			log.Printf("[WARN] Binding %q has %d unresolved secret(s): %v",
+				name, len(out.Unresolved), out.Unresolved)
+			if len(out.Secrets) == 0 {
+				log.Printf("[WARN]   every secret for %q failed to resolve, so it will "+
+					"not be protected; requests will be refused in enforce mode", name)
 			}
 		}
 
-		// TODO: Handle other selector types (container, labels, namespace, cgroupPath)
+		built = append(built, out)
 	}
+
+	pm.registry.Replace(built)
+}
+
+// rejectionFor reports why a binding cannot serve anyone under the active mode,
+// or the empty string when it can.
+//
+// A rejected binding is kept rather than dropped. Dropping it would make the
+// binary look unconfigured, and an unconfigured binary starts unprotected without
+// complaint, which turns a configuration mistake into a silent loss of the
+// guarantee the agent exists to provide.
+func rejectionFor(s secrets.Selector, mode PodIdentityMode) string {
+	if s.Binary == "" && !s.IsPodScoped() {
+		return "the selector names neither a binary nor a pod, so it matches nothing"
+	}
+
+	// The root cgroup is every process on the host, so as an authorization
+	// constraint it says nothing. Matching it would hand the binding to anything
+	// that asks; refusing it silently would look like a selector that works. Say
+	// so instead.
+	if cleaned := strings.TrimSuffix(strings.TrimSpace(s.CgroupPath), "/"); s.CgroupPath != "" && cleaned == "" {
+		return "cgroupPath selects the root cgroup, which every process on the host is under; " +
+			"name the pod's own cgroup, or select on namespace and labels instead"
+	}
+
+	switch mode {
+	case PodIdentityRequired:
+		if !s.IsPodScoped() {
+			return "policy.podIdentity is required, but this selector names no pod; " +
+				"add namespace, labels, container or cgroupPath so the binding cannot be " +
+				"claimed by any pod that reaches the socket"
+		}
+
+	case PodIdentityDisabled:
+		if s.IsPodScoped() {
+			return "policy.podIdentity is disabled, so pod selectors cannot be evaluated " +
+				"and this binding would never match; set podIdentity to preferred or required"
+		}
+		if s.Binary == "" {
+			return "policy.podIdentity is disabled, so only the binary selector is usable"
+		}
+
+	case PodIdentityPreferred:
+		// Both shapes are servable: pod-scoped selectors are enforced when the
+		// caller resolves, and binary-only bindings rely on the socket already
+		// being scoped to one pod.
+	}
+
+	return ""
 }
 
 func (pm *PolicyManager) resolveSecretValue(source SecretSource) (string, error) {
@@ -399,13 +525,28 @@ func (pm *PolicyManager) GetConfig() *KernelSealConfig {
 	return pm.config
 }
 
-// SecretsFor returns the secrets that apply to a process. Secret delivery itself
-// happens in internal/server; this is used for reporting and tests.
-func (pm *PolicyManager) SecretsFor(binaryName string, cgroupID uint64) []secrets.Secret {
-	if pm.registry == nil {
-		return nil
+// PodIdentityMode reports how callers must be identified. An unparseable value
+// is reported as required, matching parsePodIdentity: a typo in the setting that
+// governs authorization must fail closed.
+func (pm *PolicyManager) PodIdentityMode() PodIdentityMode {
+	pm.mu.RLock()
+	configured := pm.config.Policy.PodIdentity
+	pm.mu.RUnlock()
+
+	mode, err := parsePodIdentity(configured)
+	if err != nil {
+		log.Printf("[WARN] %v; refusing callers that cannot be attributed to a pod", err)
 	}
-	return pm.registry.Lookup(binaryName, cgroupID)
+	return mode
+}
+
+// SecretsFor returns the secrets that apply to a caller. Secret delivery itself
+// happens in internal/server; this is used for reporting and tests.
+func (pm *PolicyManager) SecretsFor(binaryName string, caller secrets.Caller) secrets.Match {
+	if pm.registry == nil {
+		return secrets.Match{}
+	}
+	return pm.registry.Lookup(binaryName, caller)
 }
 
 // GetTargetBinaries returns every binary name that has secrets bound to it

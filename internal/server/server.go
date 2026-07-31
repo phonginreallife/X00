@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -32,14 +33,16 @@ import (
 // or malicious caller cannot hold a connection open indefinitely.
 const handshakeTimeout = 10 * time.Second
 
-// Resolver reports which secrets apply to a process.
+// Resolver reports which secrets apply to a caller.
 type Resolver interface {
-	Lookup(binaryName string, cgroupID uint64) []secrets.Secret
+	Lookup(binaryName string, caller secrets.Caller) secrets.Match
+}
 
-	// Unresolved names the secrets bound to a binary whose source could not be
-	// read, which is what separates a misconfigured binding from a binary that
-	// has no secrets at all.
-	Unresolved(binaryName string) []string
+// Identifier reports what the kernel and the API server know about a caller.
+// Errors mean the caller could not be identified, which is different from a
+// caller that is legitimately not in a pod.
+type Identifier interface {
+	Identify(pid uint32) (secrets.Caller, error)
 }
 
 // Protector manages kernel-side protection for a PID.
@@ -69,13 +72,25 @@ type Config struct {
 	// RequireProtection withholds secrets when the PID could not be marked
 	// protected, rather than handing out secrets the kernel will not guard.
 	RequireProtection bool
+
+	// IdentifyCallers resolves each caller's cgroup and pod before matching. Off
+	// only for policy.podIdentity: disabled, where bindings are selected by the
+	// binary name the caller claims and nothing else.
+	IdentifyCallers bool
+
+	// RequirePodIdentity refuses any caller the agent cannot attribute to a pod.
+	// This is what makes the binary name stop being an authorization input: a
+	// process that reaches the socket and names someone else's binary is refused
+	// because it is not that pod, whatever it calls itself.
+	RequirePodIdentity bool
 }
 
 // Server serves secret requests from kernelseal-exec.
 type Server struct {
-	cfg       Config
-	resolver  Resolver
-	protector Protector
+	cfg        Config
+	resolver   Resolver
+	protector  Protector
+	identifier Identifier
 
 	ln     net.Listener
 	wg     sync.WaitGroup
@@ -87,7 +102,11 @@ type Server struct {
 }
 
 // New creates a server. Call Listen before Serve.
-func New(cfg Config, resolver Resolver, protector Protector) *Server {
+//
+// identifier may be nil only when cfg.IdentifyCallers is false; with it nil and
+// identification on, every caller would look unidentifiable and nothing would be
+// served.
+func New(cfg Config, resolver Resolver, protector Protector, identifier Identifier) *Server {
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = protocol.DefaultSocketPath
 	}
@@ -95,10 +114,11 @@ func New(cfg Config, resolver Resolver, protector Protector) *Server {
 		cfg.SocketMode = 0o660
 	}
 	return &Server{
-		cfg:       cfg,
-		resolver:  resolver,
-		protector: protector,
-		stopCh:    make(chan struct{}),
+		cfg:        cfg,
+		resolver:   resolver,
+		protector:  protector,
+		identifier: identifier,
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -292,21 +312,73 @@ func (s *Server) handle(cred *syscall.Ucred, req protocol.Request) protocol.Resp
 		return protocol.Response{Error: "request did not name a binary"}
 	}
 
-	matched := s.resolver.Lookup(binaryName, 0)
-	unresolved := s.resolver.Unresolved(binaryName)
+	caller, identErr := s.identify(pid)
+	peer = describeCaller(peer, caller)
 
-	if len(matched) == 0 && len(unresolved) == 0 {
+	// A caller the agent cannot attribute to a pod is refused outright when the
+	// socket is reachable by more than one pod. Falling through to binary matching
+	// here is exactly the hole this mode exists to close.
+	if s.cfg.RequirePodIdentity {
+		switch {
+		case identErr != nil:
+			s.denied(pid, "caller unidentified")
+			log.Printf("[DENY] Refusing pid=%d: policy.podIdentity is required and the caller "+
+				"could not be identified: %v (%s)", pid, identErr, peer)
+			return protocol.Response{Error: "caller could not be attributed to a pod"}
+
+		case caller.Pod == nil:
+			s.denied(pid, "caller not in a pod")
+			log.Printf("[DENY] Refusing pid=%d: policy.podIdentity is required and the caller "+
+				"is not in a known pod (%s)", pid, peer)
+			return protocol.Response{Error: "caller could not be attributed to a pod"}
+		}
+	} else if identErr != nil {
+		// Not fatal here, but it does mean every pod-scoped binding will refuse
+		// this caller, so say why once rather than leaving the refusals unexplained.
+		logging.Debugf("[SHIM] Could not identify pid=%d: %v", pid, identErr)
+	}
+
+	matched := s.resolver.Lookup(binaryName, caller)
+
+	if matched.Empty() {
 		// Not an error, and not worth a line at the default level: the shim may
 		// front a binary that has no secrets bound to it.
 		logging.Debugf("[SHIM] No secrets bound to %q, allowing exec unchanged (%s)", binaryName, peer)
 		return protocol.Response{OK: true, Protected: false}
 	}
 
+	// Bindings exist for this binary but none of them admit this caller. This is
+	// the case the cgroup work exists to catch, so it is refused regardless of
+	// enforcement mode: it is an authorization decision, not a protection one.
+	if len(matched.Secrets) == 0 && len(matched.Refused) > 0 {
+		s.denied(pid, "pod identity refused")
+		log.Printf("[DENY] Refusing %q to pid=%d: no binding admits this caller; refused %v (%s)",
+			binaryName, pid, matched.Refused, peer)
+		return protocol.Response{
+			Error: fmt.Sprintf("no secret binding for %q admits this caller", binaryName),
+		}
+	}
+
+	// The configuration names this binary but the binding cannot serve anyone as
+	// written. Serving nothing silently would start the process unprotected, so
+	// this is refused the same way an unreadable secret source is.
+	if len(matched.Secrets) == 0 && len(matched.Rejected) > 0 {
+		s.denied(pid, "binding rejected by policy")
+		log.Printf("[DENY] Refusing %q to pid=%d: binding(s) %v are not servable under the "+
+			"active policy (%s)", binaryName, pid, matched.Rejected, peer)
+		return protocol.Response{
+			Error: fmt.Sprintf("secret binding(s) %v for %q are rejected by policy",
+				matched.Rejected, binaryName),
+		}
+	}
+
+	unresolved := matched.Unresolved
+
 	// The configuration binds secrets to this binary, but none of them could be
 	// read. Returning the "no secrets bound" response here would start the
 	// process with no secrets AND no kernel protection, silently, which is how a
 	// single typo in a fileRef turns enforce mode into no enforcement at all.
-	if len(matched) == 0 {
+	if len(matched.Secrets) == 0 {
 		if s.cfg.RequireProtection {
 			s.denied(pid, "all secrets unresolved")
 			log.Printf("[DENY] Refusing to start %q: all %d configured secret(s) failed to resolve %v (%s)",
@@ -363,9 +435,9 @@ func (s *Server) handle(cred *syscall.Ucred, req protocol.Request) protocol.Resp
 		}
 	}
 
-	env := make(map[string]string, len(matched))
-	names := make([]string, 0, len(matched))
-	for _, sec := range matched {
+	env := make(map[string]string, len(matched.Secrets))
+	names := make([]string, 0, len(matched.Secrets))
+	for _, sec := range matched.Secrets {
 		env[sec.Name] = sec.Value
 		names = append(names, sec.Name)
 	}
@@ -383,15 +455,43 @@ func (s *Server) handle(cred *syscall.Ucred, req protocol.Request) protocol.Resp
 	// A partial delivery is protected and usable, so it is not a denial - but the
 	// application is starting without secrets its configuration says it needs,
 	// and it will most likely fail somewhere less obvious.
-	var warning string
+	var warnings []string
 	if len(unresolved) > 0 {
 		log.Printf("[WARN] %q started with %d unresolved secret(s): %v",
 			binaryName, len(unresolved), unresolved)
-		warning = fmt.Sprintf("%d configured secret(s) failed to resolve: %v",
-			len(unresolved), unresolved)
+		warnings = append(warnings, fmt.Sprintf("%d configured secret(s) failed to resolve: %v",
+			len(unresolved), unresolved))
 	}
 
-	return protocol.Response{OK: true, Env: env, Protected: protected, Warning: warning}
+	// Another binding for this binary served, so the request is not refused, but
+	// one that the operator wrote is contributing nothing. Without this the only
+	// evidence is a line logged once at config load, long before the application
+	// starts missing values it expects.
+	if len(matched.Rejected) > 0 {
+		log.Printf("[WARN] %q started without binding(s) %v, which the active policy rejects",
+			binaryName, matched.Rejected)
+		warnings = append(warnings, fmt.Sprintf("binding(s) %v are rejected by policy",
+			matched.Rejected))
+	}
+
+	return protocol.Response{
+		OK:        true,
+		Env:       env,
+		Protected: protected,
+		Warning:   strings.Join(warnings, "; "),
+	}
+}
+
+// identify resolves a caller's cgroup and pod, or returns an empty Caller when
+// identification is switched off.
+func (s *Server) identify(pid uint32) (secrets.Caller, error) {
+	if !s.cfg.IdentifyCallers {
+		return secrets.Caller{}, nil
+	}
+	if s.identifier == nil {
+		return secrets.Caller{}, errors.New("caller identification is enabled but no identifier is configured")
+	}
+	return s.identifier.Identify(pid)
 }
 
 func (s *Server) denied(pid uint32, reason string) {
