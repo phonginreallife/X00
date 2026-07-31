@@ -22,6 +22,13 @@ data:
       allowSelfRead: true    # Allow a process to read its own /proc files
       auditAll: false        # Audit all accesses, not just blocked ones
 
+      # preferred is correct for the sidecar: the socket lives on an emptyDir
+      # shared only inside this pod, so reaching it already proves which pod the
+      # caller is, and the binary name only picks among this pod's own bindings.
+      # A node-wide DaemonSet has no such boundary and must use required; see
+      # deploy/manifests/daemonset.yaml.
+      podIdentity: preferred
+
     secrets:
       - name: myapp-secrets
         selector:

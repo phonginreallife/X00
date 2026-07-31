@@ -1,5 +1,12 @@
 # KernelSeal DaemonSet - Run KernelSeal on every node (alternative to sidecar pattern)
-# Use this when you want node-wide secret protection
+# Use this when you want node-wide secret protection.
+#
+# One socket serves every pod on the node, so the socket itself is not an
+# authorization boundary here. The accompanying ConfigMap sets
+# policy.podIdentity: required, which makes the agent attribute each caller to a
+# pod by its cgroup before any binding matches. Do not lower that setting on a
+# shared node: without it, any pod that mounts /run/kernelseal can request every
+# binding in this node's configuration by naming the binary.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -117,14 +124,21 @@ spec:
           readOnly: true
         - name: bpf-maps
           mountPath: /sys/fs/bpf
+        # The caller's cgroup is what authorizes a request under
+        # policy.podIdentity: required. The path comes from procfs and the
+        # numeric id from this mount, so without it the agent cannot tell which
+        # pod is on the other end of the socket.
         - name: cgroup
           mountPath: /sys/fs/cgroup
           readOnly: true
         - name: proc
           mountPath: /host/proc
           readOnly: true
-        
+
         env:
+        # Required by policy.podIdentity. The agent watches only the pods on its
+        # own node, and refuses to start in required mode without this, because a
+        # pod watch it cannot scope is one it will not run.
         - name: NODE_NAME
           valueFrom:
             fieldRef:

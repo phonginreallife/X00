@@ -29,6 +29,12 @@ policy:
   auditAll: false
   kernelBinaryFilter: true
 
+  # The demo runs on a plain host with no API server, so there are no pods to
+  # attribute callers to. preferred keeps the binary-only binding below servable;
+  # required would refuse every request, correctly but uselessly here. A node-wide
+  # agent in a real cluster must use required.
+  podIdentity: preferred
+
 secrets:
   - name: node-demo
     selector:

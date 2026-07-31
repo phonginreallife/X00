@@ -36,6 +36,26 @@ policy:
   # When disabled, KernelSeal monitors ALL process executions (higher overhead)
   kernelBinaryFilter: true
 
+  # How a caller must be identified before secrets are released.
+  #
+  #   preferred  (default) Resolve the caller's pod when possible and enforce
+  #              every pod selector against it, while still serving bindings that
+  #              carry no pod selector. Right for the per-pod sidecar, where the
+  #              socket is already reachable only from inside one pod.
+  #
+  #   required   Refuse any caller that cannot be attributed to a pod, and refuse
+  #              bindings that name no pod. Right for a node-wide DaemonSet,
+  #              where every pod on the node can open the same socket. This is
+  #              what stops a pod from requesting another pod's secrets by naming
+  #              its binary.
+  #
+  #   disabled   Do not identify callers. Bindings are selected by the binary
+  #              name alone, which is the pre-1.2.0 behavior.
+  #
+  # This is a deployment question, not a preference: it depends entirely on who
+  # can reach the socket. See SECURITY.md, "Authorization Boundary".
+  podIdentity: preferred
+
 secrets:
   # Each binding names a binary. When a process is started through
   # kernelseal-exec, KernelSeal matches the binary being exec'd against these
@@ -43,6 +63,13 @@ secrets:
   #
   # A binary listed here only receives secrets if it is launched via the shim:
   #   kernelseal-exec -- /usr/bin/myapp
+  #
+  # The binary name is a claim, not an identity: at handshake time the caller has
+  # not exec'd yet, so the agent cannot verify it. It narrows which bindings
+  # apply; what authorizes a caller is its cgroup, which the kernel sets. Add
+  # namespace, labels, container or cgroupPath to a selector to constrain which
+  # pod may match it. Under podIdentity: required at least one of those is
+  # mandatory and a binary-only binding is rejected at load.
   #
   # ------------------------------------------------------
   # WORKING: Environment variable source (envRef)

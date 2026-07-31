@@ -36,19 +36,39 @@ data:
       
       # Audit all accesses to protected resources (even if allowed)
       auditAll: false
-    
+
+      # How a caller must be identified before anything is released.
+      #
+      #   required   Refuse any caller that cannot be attributed to a pod, and
+      #              refuse bindings that name no pod. Correct here: this
+      #              DaemonSet serves one socket to every pod that mounts it, so
+      #              without this the binary name is the only thing separating
+      #              them and any pod can request any binding by naming it.
+      #   preferred  Enforce pod selectors when present, still serve bindings
+      #              that have none. Correct for the per-pod sidecar, where the
+      #              socket is already scoped to a single pod.
+      #   disabled   Do not identify callers at all. The 1.1.0 behavior.
+      #
+      # The agent refuses to start in required mode if it cannot watch pods,
+      # because every request would be refused anyway.
+      podIdentity: required
+
     # Secret bindings - define which secrets go to which processes.
-    # A process receives them when it is started through kernelseal-exec and the
-    # binary it execs matches a selector below.
+    #
+    # A process receives them when it is started through kernelseal-exec, the
+    # binary it execs matches, AND its pod matches the selector. The binary name
+    # is a claim the caller makes about itself, so under podIdentity: required it
+    # only narrows what the caller's pod is already entitled to; a binding with no
+    # pod selector is rejected at load.
     secrets: []
     # Example:
     # - name: web-app-secrets
     #   selector:
-    #     binary: "nginx"      # Match by binary name
-    #     # container: "web"   # Match by container name  
-    #     # labels:            # Match by pod labels
-    #     #   app: web
-    #     # namespace: production
+    #     binary: "nginx"          # Narrows which of this pod's bindings apply
+    #     namespace: production     # Required under podIdentity: required,
+    #     labels:                   #   along with any of labels, container or
+    #       app: web                #   cgroupPath
+    #     # container: "web"
     #   secretRefs:
     #     - name: SSL_CERT_PASSWORD
     #       source:
