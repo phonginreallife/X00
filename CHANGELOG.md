@@ -5,6 +5,67 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Authorization by cgroup.** The agent now resolves a caller's cgroup, maps it
+  to the pod that owns it, and matches secret bindings against that pod. The
+  cgroup is set by the kernel when the container is created and cannot be changed
+  from inside it, so it is identity rather than assertion. The `namespace`,
+  `labels`, `container` and `cgroupPath` selectors were accepted by the parser and
+  ignored when matching; they now decide who a binding applies to. Closes the hole
+  where any process that could open the socket could request the secrets bound to
+  any configured binary by naming it.
+- **`policy.podIdentity`**, with three modes. `required` refuses any caller that
+  cannot be attributed to a pod and rejects bindings that name no pod; it is what
+  `deploy/manifests/daemonset.yaml` now ships, because a node-wide agent serves one
+  socket to every pod on the node. `preferred`, the default, enforces pod selectors
+  when they are present but still serves bindings without one, which is correct for
+  the per-pod sidecar whose socket is already scoped to a single pod. `disabled` is
+  the 1.1.0 behavior. An unrecognized value is treated as `required`, so a typo in
+  the setting that governs authorization cannot quietly widen it.
+- **A pod watcher**, a list-watch of the pods on the agent's own node, restricted
+  with a `spec.nodeName` field selector. It is written against the API server
+  directly rather than through client-go, which would have added tens of megabytes
+  of dependencies to a binary whose purpose is to be a small static thing that
+  loads BPF. The RBAC it needs was already granted in 1.0.0 and unused.
+- **`kernelseal_pods_watched`**, the size of that cache. On a node-wide agent a
+  zero here means every request is being refused, which is otherwise hard to tell
+  from an agent with nothing to do.
+
+### Changed
+
+- Denials now name the calling pod's namespace, name and UID rather than only a
+  PID, which is usually gone by the time anyone reads the log.
+- A binding the policy cannot serve as written is kept and marked rejected instead
+  of being dropped. A dropped binding makes its binary look unconfigured, and an
+  unconfigured binary starts unprotected without complaint, which turns a
+  configuration mistake into a silent loss of the guarantee.
+- Refusing a caller on identity does not depend on `policy.mode`. Audit mode
+  weakens what the kernel blocks; it does not make one pod's secrets available to
+  another.
+
+### Notes
+
+A `cgroupPath` selector refuses when the agent runs in its own cgroup namespace,
+because the kernel then renders callers' paths relative to the agent rather than to
+the hierarchy root and the two cannot be compared. Pod attribution is unaffected,
+so `namespace`, `labels` and `container` work in both cases. The agent reports the
+condition at startup.
+
+A `cgroupPath` of `/` is rejected at load: every process on the host is under the
+root cgroup, so it constrains nothing.
+
+Existing configurations keep working: the default `preferred` mode serves
+binary-only bindings exactly as 1.1.0 did. Setting `podIdentity: required`, which
+the DaemonSet manifest now does, requires every binding to carry a pod selector.
+
+The cgroup-to-pod mapping is covered by unit tests over recorded path shapes for
+the systemd and cgroupfs drivers with containerd, CRI-O and Docker, including
+guaranteed-QoS pods, non-default kubelet cgroup roots and cgroup v1 hosts. It has
+not yet been exercised on a live EKS node.
+
 ## [1.1.0] - 2026-07-30
 
 Supply chain and documentation. The agent, the shim and the BPF programs are

@@ -159,34 +159,108 @@ Two properties follow:
 
 ### Authorization Boundary
 
-**Socket reachability is the authorization boundary.** The agent cannot verify
-which binary the shim is about to execute: at handshake time `/proc/<pid>/exe`
-still points at the shim itself, because the `execve` has not happened yet. The
-binary name in the request therefore selects *which* secrets apply; it is not an
-identity claim.
+**The binary name in a request is a claim, not an identity.** The agent cannot
+verify which binary the shim is about to execute: at handshake time
+`/proc/<pid>/exe` still points at the shim itself, because the `execve` has not
+happened yet. The binary name therefore selects *which* secrets apply; it never
+establishes *who is asking*.
 
-The practical consequence is that any process able to open the socket can request
-the secrets bound to any configured binary by naming it. This requires no
-subterfuge: the request is a JSON object containing a string, so a compromised
-container does not need to install the binary, rename anything, or execute
-anything. Writing to the socket is sufficient.
+Before 1.2.0 that claim was the only authorization input, so any process able to
+open the socket could request the secrets bound to any configured binary by naming
+it. This required no subterfuge: the request is a JSON object containing a string,
+so a compromised container did not need to install the binary, rename anything, or
+execute anything. Writing to the socket was sufficient.
 
 ```bash
 # Any process that can reach the socket, without the shim involved at all
 echo '{"binary":"/usr/bin/node"}' | nc -U /run/kernelseal/kernelseal.sock
 ```
 
-With a node-wide `hostPath` socket, that means **any pod on the node that mounts
-`/run/kernelseal` can obtain every secret in that node's configuration.** On nodes
-dedicated to a single application this is self-only and harmless. On shared nodes
-it is cross-tenant secret disclosure, and the sidecar pattern with a pod-scoped
-`emptyDir` socket is the correct deployment.
+With a node-wide `hostPath` socket, that meant any pod on the node that mounted
+`/run/kernelseal` could obtain every secret in that node's configuration: self-only
+on a dedicated node, cross-tenant secret disclosure on a shared one.
 
-Closing this properly requires authorizing on something the container cannot
-forge. The caller's cgroup qualifies, since it is set by the kernel and maps to a
-pod, so a future release resolves the peer's cgroup to a pod and matches bindings on
-namespace and labels, leaving the binary name to select only *within* what that pod
-is entitled to. Tracked for 1.1.0. Until then, scope the socket:
+#### What authorizes a caller now
+
+Since 1.2.0 the agent authorizes on the caller's **cgroup**, which the kernel sets
+when the container is created and which a process cannot change from inside it. The
+agent reads the peer's cgroup path from procfs, resolves the pod UID out of it, and
+looks that UID up against the pods scheduled on its own node. Bindings then select
+on `namespace`, `labels`, `container` and `cgroupPath`, and the binary name only
+narrows what that pod is already entitled to.
+
+The command above now fails on a node-wide agent: `nc` is in some pod's cgroup, and
+that pod does not match the binding's selector, so the request is refused and
+audited whatever it calls itself.
+
+How strictly this is applied is set by `policy.podIdentity`, because it depends
+entirely on who can reach the socket, which is a deployment question:
+
+| Mode | Behavior | Use when |
+|---|---|---|
+| `required` | Refuses any caller it cannot attribute to a pod, and rejects bindings that name no pod. | A node-wide DaemonSet. Every pod on the node can open the socket, so the socket is not a boundary. |
+| `preferred` (default) | Enforces pod selectors when present; still serves bindings that carry none. | A per-pod sidecar. The `emptyDir` socket is reachable only from inside one pod, so reaching it already proves which pod is asking. |
+| `disabled` | Does not identify callers at all. | Only where the pre-1.2.0 behavior is needed deliberately. |
+
+`deploy/manifests/daemonset.yaml` ships `required` and
+`deploy/kernelseal-sidecar.yaml` ships `preferred`. In `required` mode the agent
+refuses to start if it cannot watch pods, rather than running as a pod that looks
+healthy while refusing every request.
+
+An unrecognized `podIdentity` value is treated as `required`, so a typo in the
+setting that governs authorization cannot quietly widen it.
+
+#### What this does not close
+
+- **Within a single pod, the binary name is still only a claim.** Any process in a
+  pod can request any binding that pod is entitled to by naming its binary. Pod
+  identity separates tenants, not processes inside one tenant.
+- **A binding with no pod selector is served to any caller** under `preferred`.
+  That is correct only if the socket is genuinely pod-scoped. If you run a
+  node-wide agent, use `required`; nothing else in the configuration will catch
+  the mistake for you.
+- **Pod labels are mutable.** Anyone who can patch a pod's labels, or create a pod
+  carrying them, can make it match a `labels` selector. Bind on `namespace` as
+  well, and treat label-write access as equivalent to access to the secrets those
+  labels select.
+- **The pod cache can be stale.** It is a list-watch against the API server; a
+  label change takes effect when the watch delivers it. A caller the agent cannot
+  attribute to a known pod is refused in `required` mode rather than served.
+
+#### Cgroup namespaces and `cgroupPath`
+
+The kernel renders `/proc/<pid>/cgroup` relative to the *reading* process's cgroup
+namespace. An agent that has its own namespace, which is the default for a
+container on a cgroup v2 host, therefore sees other pods anchored to itself:
+
+```
+# Agent in its own cgroup namespace, reading another container's cgroup
+0::/../docker-7f2a660030ce....scope
+
+# Same read, agent in the host's cgroup namespace
+0::/system.slice/docker-7f2a660030ce....scope
+```
+
+Pod attribution is unaffected, because the pod UID is parsed from a path segment
+rather than from the path as a whole, so `namespace`, `labels` and `container`
+selectors work either way. Only `cgroupPath` is affected, and it refuses rather
+than comparing two paths anchored differently, since a coincidental match would
+authorize the wrong cgroup.
+
+The agent detects this at startup and logs it:
+
+```
+[IDENTITY] Agent cgroup: /
+[WARN] This agent sees its own cgroup as "/", which means it has its own cgroup
+[WARN]   namespace. Callers' cgroup paths will be rendered relative to it, so
+[WARN]   cgroupPath selectors cannot match and will refuse.
+```
+
+Prefer `namespace` and `labels`. Reach for `cgroupPath` only when the agent runs in
+the host's cgroup namespace, and confirm the startup line reports a real path
+rather than `/`.
+
+Scoping the socket is still worthwhile defense in depth:
 
 - Mount the socket volume only into pods that should receive those secrets. Use a
   pod-scoped `emptyDir` rather than a node-wide `hostPath` when a DaemonSet is not
@@ -321,7 +395,22 @@ Secret lifecycle:
 
 ### RBAC Configuration
 
+Under `policy.podIdentity: preferred` or `required` the agent also needs to read
+pods, because that is how a caller's cgroup becomes a namespace and a set of
+labels. The watch is restricted to the agent's own node with a
+`spec.nodeName` field selector, so the permission is cluster-scoped but the traffic
+is not: the agent only ever sees pods it could actually be asked about.
+
 ```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kernelseal-pods
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]         # Caller attribution only
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -383,11 +472,17 @@ policy:
   allowSelfRead: true                       # Allow process self-inspection
   auditAll: true                            # Log all access attempts
   kernelBinaryFilter: true                  # Efficient kernel-side filtering
+  podIdentity: required                     # Node-wide agent: attribute every
+                                            # caller to a pod before serving it
 
 secrets:
   - name: myapp-secrets
     selector:
-      binary: "myapp"                       # Matches what the shim will exec
+      binary: "myapp"                       # Narrows which of this pod's
+                                            # bindings apply. Not an identity.
+      namespace: production                 # Authorizes: derived from the
+      labels:                               # caller's cgroup, which the kernel
+        app: myapp                          # sets and a container cannot forge
     secretRefs:
       - name: DB_PASSWORD
         source:
@@ -395,6 +490,11 @@ secrets:
           # Direct vaultRef is not yet implemented.
           fileRef: /vault/secrets/db-password
 ```
+
+With `podIdentity: required`, a binding whose selector names only a binary is
+rejected at load and every request for it is refused, rather than being served to
+whichever pod asks first. The refusal is logged with the binding name so the
+misconfiguration is visible instead of silently costing you the protection.
 
 Note that `auditAll: true` logs every allowed access to a protected process as
 well as every denial. It is useful while establishing a baseline, but on a busy
@@ -494,10 +594,24 @@ kubectl logs -l app=kernelseal | grep "\[LSM AUDIT\]"
 # Refused secret requests, e.g. protection unavailable or a recycled PID
 kubectl logs -l app=kernelseal | grep "\[DENY\]"
 
+# A pod asking for another pod's secrets. Each line carries the calling pod's
+# namespace, name and UID, so it names the workload rather than a PID that is
+# already gone by the time anyone reads the log.
+kubectl logs -l app=kernelseal | grep "no binding admits this caller"
+
+# Bindings the policy will not serve as written, logged once at config load.
+# These are misconfigurations, not attacks, but they fail closed either way.
+kubectl logs -l app=kernelseal | grep "REJECTED"
+
 # Current counters
 kubectl exec -it <kernelseal-pod> -- \
-  wget -qO- localhost:9090/metrics | grep -E "kernelseal_(access|secrets)"
+  wget -qO- localhost:9090/metrics | grep -E "kernelseal_(access|secrets|pods)"
 ```
+
+A steady stream of `no binding admits this caller` from one pod is a workload
+asking for secrets it is not entitled to. Treat a sustained rate as an intrusion
+signal, and a single burst right after a deployment as a selector that no longer
+matches the labels the workload actually carries.
 
 ### Response Playbook
 
@@ -580,6 +694,8 @@ groups:
 - [ ] Review and customize policy configuration
 - [ ] Configure the binary allowlist for your applications
 - [ ] Set up secret source (Vault, K8s Secrets, etc.)
+- [ ] Set `policy.podIdentity: required` on any node-wide agent, and give every
+      binding a `namespace` or `labels` selector
 - [ ] Scope the socket volume to the pod that should receive those secrets
 - [ ] Wrap each application entrypoint with `kernelseal-exec`
 - [ ] Leave the shim's `-on-error` at its `fail` default so an application cannot
@@ -592,6 +708,8 @@ groups:
 
 - [ ] KernelSeal running in `enforce` mode
 - [ ] `kernelseal_lsm_loaded` reporting 1
+- [ ] `kernelseal_pods_watched` non-zero on a node-wide agent, since a cold or
+      empty pod cache means every request is refused
 - [ ] Readiness probe passing, which confirms enforcement is available
 - [ ] Read-only root filesystem enabled on application containers
 - [ ] Capabilities limited to `SYS_ADMIN`, `BPF`, `PERFMON`, `SYS_RESOURCE`

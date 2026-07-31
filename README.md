@@ -64,7 +64,10 @@ Three things follow from this design:
 
 The agent identifies its caller with `SO_PEERCRED`, which the kernel fills in and
 the caller cannot forge. Secret delivery is therefore tied to a real process, not
-to anything the client asserts about itself.
+to anything the client asserts about itself. From that PID the agent reads the
+caller's cgroup, which the kernel set when the container was created, and resolves
+it to a pod. That pod, not the binary name in the request, is what authorizes the
+request. The binary name only narrows which of that pod's bindings apply.
 
 Cleanup is driven by the `sched_process_exit` tracepoint, backed by a periodic
 reconciler that drops protection for PIDs that no longer exist. Without the
@@ -245,11 +248,15 @@ policy:
   allowSelfRead: true        # Let a process read its own /proc files
   auditAll: false            # Log allowed accesses too
   kernelBinaryFilter: true   # Only observe configured binaries
+  podIdentity: preferred     # required on a node-wide agent, see below
 
 secrets:
   - name: database-creds
     selector:
-      binary: "postgres"     # Matches the binary the shim is about to exec
+      binary: "postgres"     # Narrows which of this pod's bindings apply
+      namespace: production  # Authorizes: comes from the caller's cgroup
+      labels:
+        app: database
     secretRefs:
       - name: PGPASSWORD
         source:
@@ -263,6 +270,33 @@ monitoring:
 
 A binary listed under `secrets` only receives them if it is started through the
 shim. Adding a binding does not affect processes launched any other way.
+
+### Who a binding applies to
+
+`binary` is a claim: at handshake time the caller has not exec'd yet, so the agent
+cannot verify it. The selector fields that authorize are the ones derived from the
+caller's cgroup, which a container cannot change from inside itself.
+
+| Field | Source | Authorizes |
+|---|---|---|
+| `binary` | The request | No. Narrows only. |
+| `namespace` | Caller's cgroup, then the API server | Yes |
+| `labels` | Caller's cgroup, then the API server | Yes |
+| `container` | Caller's cgroup, then the API server | Yes |
+| `cgroupPath` | Caller's cgroup | Yes, and needs no API access |
+
+`policy.podIdentity` sets how strictly this is applied, which depends on who can
+reach the socket:
+
+| Mode | Behavior | Use for |
+|---|---|---|
+| `preferred` (default) | Enforces pod selectors when present; still serves bindings that have none | The per-pod sidecar, where the socket is already scoped to one pod |
+| `required` | Refuses callers it cannot attribute to a pod, and rejects bindings that name no pod | A node-wide DaemonSet, where every pod on the node can open the socket |
+| `disabled` | Does not identify callers at all | The pre-1.2.0 behavior, when needed deliberately |
+
+In `required` mode the agent needs `pods: get/list/watch` and a `NODE_NAME` from
+`spec.nodeName`; it watches only its own node's pods. It refuses to start if it
+cannot, rather than running while refusing every request.
 
 ### Secret sources
 
@@ -331,6 +365,9 @@ Metrics:
 - `kernelseal_access_audit_total` - accesses audited but allowed
 - `kernelseal_protected_pids` - currently protected processes
 - `kernelseal_lsm_loaded` - 1 when the LSM programs are attached
+- `kernelseal_pods_watched` - pods cached for caller attribution, present only
+  when the pod watcher is running. Zero on a node-wide agent means every request
+  is being refused
 
 Example log output:
 
@@ -338,17 +375,22 @@ Example log output:
 [START] Starting KernelSeal - Secret Protection System
    Version: v1.0.0
 [CONFIG] Loaded KernelSeal configuration from /etc/kernelseal/config.yaml
-[REGISTER] 2 secrets registered for binary: myapp
+[CONFIG] Policy applied: mode=enforce podIdentity=required
+[REGISTER] 2 secret(s) for binding "myapp" (binary="myapp", pod-scoped)
 [OK] Exec monitor BPF programs loaded and attached
 [FILTER] Kernel-side filtering enabled for 1 binaries: [myapp]
 [OK] LSM BPF programs loaded and attached
-[CONFIG] Policy configured: mode=enforce, environ=true, mem=true, ptrace=true
+[PODS] Watching 14 pod(s) on node ip-10-0-1-23.ec2.internal
+[IDENTITY] Mode required: callers are attributed to a pod before any binding matches
 [SOCKET] Listening on /run/kernelseal/kernelseal.sock (mode 0660)
 [METRICS] Serving /metrics, /healthz and /ready on [::]:9090
 
-[PROTECT] pid=5678 marked protected before release (pid=5678 uid=1000 ...)
+[PROTECT] pid=5678 marked protected before release (pid=5678 uid=1000 ... pod=production/myapp-7d4f)
 [ISSUE] Released 2 secrets to "myapp" [API_KEY DB_PASSWORD] (pid=5678 ...)
 [LSM BLOCKED] PID=9999 (cat) uid=0 attempted environ access to PID=5678
+
+[DENY] Refusing "myapp" to pid=6001: no binding admits this caller;
+       refused [myapp-secrets (namespace)] (pid=6001 ... pod=sandbox/scratch-xyz)
 ```
 
 ## Testing
@@ -398,10 +440,13 @@ kernelseal/
 │   └── kernelseal-exec/         # The exec shim
 ├── internal/
 │   ├── bpf/                     # BPF loading and map management
+│   ├── cgroup/                  # Caller cgroup and pod UID resolution
+│   ├── identity/                # Joins cgroup to pod for authorization
+│   ├── kube/                    # Pod list-watch for this node
 │   ├── metrics/                 # Prometheus and health endpoints
-│   ├── protocol/               # Shim/agent wire format
+│   ├── protocol/                # Shim/agent wire format
 │   ├── reconcile/               # Protected-PID reconciliation
-│   ├── secrets/                 # Secret registry
+│   ├── secrets/                 # Secret bindings and selector matching
 │   ├── server/                  # Unix socket secret delivery
 │   ├── types/                   # Shared types, ABI-pinned
 │   └── policy.go                # Configuration and policy
@@ -446,11 +491,16 @@ See [SECURITY.md](SECURITY.md) for the full threat model. In brief:
 ### Known limitations
 
 - `vaultRef` is parsed but not implemented.
-- Selectors other than `binary` (`container`, `labels`, `namespace`,
-  `cgroupPath`) are parsed but not yet used for matching.
 - The agent cannot verify which binary the shim will exec, because at handshake
   time `/proc/<pid>/exe` still points at the shim. The binary name selects which
-  secrets apply; it is not an identity claim.
+  secrets apply; it is not an identity claim. Since 1.2.0 the caller's pod is what
+  authorizes the request, so this separates pods but not processes inside one pod:
+  any process in a pod can request any binding that pod is entitled to.
+- Pod labels are mutable, so anyone who can patch a pod's labels can make it match
+  a `labels` selector. Bind on `namespace` too.
+- Cgroup-to-pod attribution has been verified against recorded path shapes for the
+  systemd and cgroupfs drivers with containerd, CRI-O and Docker, but not yet on a
+  live EKS node. See the 1.2.0 release notes.
 - Go strings cannot be reliably zeroed, so secret values may persist in the
   agent's heap until garbage collected.
 
