@@ -1,27 +1,33 @@
 # Standalone Linux
 
-KernelSeal does not require Kubernetes. The shim, the agent, the socket handshake
-and both BPF-LSM hooks are plain Linux, and the quick start on this site is
-already a standalone example.
+On a single host, KernelSeal is two pieces: an agent running as a system service,
+and applications started through the shim. The agent loads the BPF programs,
+listens on a unix socket, and hands each process its secrets in the instant before
+it execs the real binary.
 
-Only two things are Kubernetes-specific: pod attribution, which is opt-in, and the
-`secretKeyRef` secret source, which reads a mounted Secret path. `value`, `envRef`
-and `fileRef` work anywhere.
+This is the environment the guarantee is built out of. Every part of it is a kernel
+mechanism: the protected-PID set is a BPF map, the caller's identity comes from
+`SO_PEERCRED` and procfs, and the refusals come from LSM hooks. Nothing in that
+chain needs an orchestrator.
+
+Authorization has a natural home here too. Every systemd service runs in its own
+cgroup, assigned by the kernel and unchangeable from inside the process, so a
+binding can name `/system.slice/myapp.service` and no other unit can claim it.
 
 ## Requirements
 
-Identical to the Kubernetes case, minus the cluster. See
-[Requirements](requirements.md): Linux 5.7+, `bpf` in the boot-time `lsm=` list,
-and kernel BTF present.
+Linux 5.7 or newer, booted with `bpf` in its `lsm=` list, and kernel BTF present.
+[Requirements](requirements.md) has the detail, including the reboot that usually
+comes with the `lsm=` change.
 
 ```bash
 cat /sys/kernel/security/lsm    # must contain: bpf
 ls -l /sys/kernel/btf/vmlinux
 ```
 
-There is no probe job to run, since that is a Kubernetes `Job`. Those two commands
-plus starting the agent are the equivalent: the agent reports whether the LSM
-programs attached.
+Starting the agent is the real check. It reports whether the LSM programs
+attached, and in `enforce` mode it refuses to release secrets rather than run
+without them.
 
 ## Install
 
@@ -109,12 +115,15 @@ SupplementaryGroups=kernelseal
 `Type=notify` readiness and log capture all behave exactly as before. The PID
 systemd supervises is the PID that was marked protected.
 
-## Authorization on a standalone host
+## Authorization by cgroup
 
-This is where a standalone deployment is stronger than it first appears. Every
-systemd service runs in its own cgroup, the kernel assigns it, and a process
-cannot change its own. So `cgroupPath` is real identity here for the same reason
-pod attribution is under Kubernetes.
+The binary name in a request is a claim. The agent cannot verify it, because at
+handshake time `/proc/<pid>/exe` still points at the shim, so on its own it says
+which secrets are wanted rather than who is entitled to them.
+
+The cgroup is not a claim. systemd puts every service in its own, the kernel
+assigns it, and a process cannot move itself out of it. Selecting on it therefore
+authorizes:
 
 ```yaml
 version: v1
@@ -153,19 +162,20 @@ request naming `myapp` from some other unit's cgroup is refused, not served.
 
     The agent logs this at startup if it detects it.
 
-## `podIdentity` off-cluster
+## Which selectors authorize
 
 | Mode | Standalone behavior |
 |---|---|
-| `preferred` (default) | Starts. Callers are identified by cgroup only. `cgroupPath` works; `namespace`, `labels` and `container` match nothing |
-| `required` | **Refuses to start.** No caller could be attributed to a pod, so every request would be refused, and a startup failure is better than an agent that looks healthy while serving nothing |
-| `disabled` | No caller identification. Any process that can reach the socket can request any binding by naming it |
+| `preferred` (default) | Callers are identified by cgroup. This is the mode to run |
+| `required` | **Refuses to start.** It demands that every caller be attributed to a pod, which cannot happen here, and a startup failure beats an agent that looks healthy while serving nothing |
+| `disabled` | No caller identification at all. Any process that can reach the socket can request any binding by naming it |
 
-Selectors that need the API server fail closed rather than being skipped when
-there is no pod, so a `namespace` selector on a standalone host denies everything
-rather than admitting everyone.
+`cgroupPath` and `binary` are the selectors that mean something on a host.
+`namespace`, `labels` and `container` are resolved from a pod, so they match
+nothing here, and they **deny** rather than being skipped: a binding carrying one
+admits no caller instead of admitting every caller.
 
-## Docker without Kubernetes
+## Docker
 
 `demo/docker-compose.yaml` runs the agent and an application container together.
 The agent needs the same capabilities as above, plus `/sys/kernel/security`,
@@ -173,12 +183,14 @@ The agent needs the same capabilities as above, plus `/sys/kernel/security`,
 container needs the socket. `cgroupPath` selectors will refuse in that setup
 unless the agent shares the host's cgroup namespace.
 
-## What does not apply
+## Feature support
 
-| Feature | Standalone |
+| Feature | On a host |
 |---|---|
-| `secretKeyRef` | No. Use `fileRef` against a path you write |
-| `namespace`, `labels`, `container` selectors | No. They need the API server |
-| `cgroupPath`, `binary` selectors | Yes |
-| `deploy/kernelseal-probe.yaml` | No, it is a Kubernetes Job |
-| Everything else | Yes |
+| Protection of `environ`, `mem`, `maps` and ptrace | Yes |
+| `value`, `envRef`, `fileRef` secret sources | Yes |
+| `binary` and `cgroupPath` selectors | Yes |
+| Audit mode, fail-closed, metrics and health endpoints | Yes |
+| Kernel-side binary filtering | Yes |
+| `secretKeyRef` | No. It reads a projected Secret path. Use `fileRef` |
+| `namespace`, `labels`, `container` selectors | No. They are resolved from a pod |
