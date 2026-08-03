@@ -102,3 +102,6 @@ scan-results/
 *.bak
 *.orig
 *.backup
+
+# MkDocs build output
+site/

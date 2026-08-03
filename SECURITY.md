@@ -6,11 +6,10 @@
 - [Reporting a Vulnerability](#reporting-a-vulnerability)
 - [Threat Model](#threat-model)
 - [Security Architecture](#security-architecture)
-- [Security Controls](#security-controls)
-- [Deployment Security](#deployment-security)
 - [Supply Chain Security](#supply-chain-security)
 - [Incident Response](#incident-response)
 - [Hardening Checklist](#hardening-checklist)
+- [Security Scanning](#security-scanning)
 - [License](#license)
 
 ## Supported Versions
@@ -32,7 +31,7 @@ We take security seriously. If you discover a security vulnerability in KernelSe
 ### How to Report
 
 1. **DO NOT** create a public GitHub issue for security vulnerabilities
-2. Use GitHub's private vulnerability reporting: [Report a vulnerability](../../security/advisories/new)
+2. Use GitHub's private vulnerability reporting: [Report a vulnerability](https://github.com/phonginreallife/kernelseal/security/advisories/new)
 3. Or email: phonginreallife@gmail.com
 
 ### Required Information

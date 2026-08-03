@@ -1,0 +1,93 @@
+site_name: KernelSeal
+site_description: Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM
+site_url: https://phonginreallife.github.io/kernelseal/
+repo_url: https://github.com/phonginreallife/kernelseal
+repo_name: phonginreallife/kernelseal
+edit_uri: edit/main/docs/
+copyright: Apache License 2.0
+
+# The launch post is a draft that lives in the repository for review. It is not
+# part of the documentation and must not be published with it.
+exclude_docs: |
+  launch-post.md
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  # base_path reaches the repository root so SECURITY.md and CONTRIBUTING.md can
+  # be included rather than copied. check_paths turns a moved file into a build
+  # failure instead of a silently empty page.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Requirements: getting-started/requirements.md
+      - Quick start: getting-started/quickstart.md
+      - Deploy to Kubernetes: getting-started/kubernetes.md
+  - Concepts:
+      - How it works: concepts/how-it-works.md
+      - Authorization: concepts/authorization.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Observability: reference/observability.md
+      - Verifying a release: reference/verifying-releases.md
+  - Security: security.md
+  - Contributing: contributing.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/phonginreallife/kernelseal

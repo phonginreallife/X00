@@ -12,7 +12,7 @@ KernelSeal makes a narrow security claim, and a change that widens the trust
 boundary needs to be talked through before either of us spends time on code.
 
 For security issues, do not open an issue. Follow
-[SECURITY.md](SECURITY.md) instead.
+[SECURITY.md](https://github.com/phonginreallife/kernelseal/blob/main/SECURITY.md) instead.
 
 ## Development setup
 
@@ -25,7 +25,7 @@ sudo make install-deps
 
 If your distribution ships `bpftool` only as a wrapper that fails to find a
 matching `linux-tools` package, install `linux-tools-$(uname -r)` explicitly.
-[scripts/ci-install-bpf-deps.sh](scripts/ci-install-bpf-deps.sh) is what CI uses
+[scripts/ci-install-bpf-deps.sh](https://github.com/phonginreallife/kernelseal/blob/main/scripts/ci-install-bpf-deps.sh) is what CI uses
 to work around this on GitHub runners.
 
 Then:
@@ -68,8 +68,8 @@ cat /sys/kernel/security/lsm    # must contain: bpf
 ## Two things reviewers will look for
 
 **Keep the ABI check passing.** `make abi-check` compares the Go structs in
-[internal/types/events.go](internal/types/events.go) against the C definitions in
-[bpf/kernelseal_common.h](bpf/kernelseal_common.h) field by field, including
+[internal/types/events.go](https://github.com/phonginreallife/kernelseal/blob/main/internal/types/events.go) against the C definitions in
+[bpf/kernelseal_common.h](https://github.com/phonginreallife/kernelseal/blob/main/bpf/kernelseal_common.h) field by field, including
 padding the compiler inserts implicitly. This is not a formality. Both sides of
 the policy struct are 8 bytes, so reordering a field on one side still updates
 the map successfully and simply writes each setting to the wrong byte: the
@@ -102,12 +102,14 @@ guarantee rather than the implementation. Say so in the pull request.
 ## Where to start
 
 Issues labelled `good first issue` are scoped to be self contained. Beyond those,
-the known limitations in [README.md](README.md#known-limitations) are the honest
-list of what is missing: `vaultRef` is parsed but unimplemented, and the
-`container`, `labels`, `namespace` and `cgroupPath` selectors are parsed but not
-yet used for matching.
+the [roadmap issue](https://github.com/phonginreallife/kernelseal/issues/16) is the
+honest list of what is missing, and the known limitations in
+[README.md](https://github.com/phonginreallife/kernelseal/blob/main/README.md#known-limitations)
+say the same in shorter form. `vaultRef` is still parsed but unimplemented, and
+the cgroup-to-pod mapping added in 1.2.0 has unit tests over recorded path shapes
+but has not been exercised on a live cloud cluster.
 
 ## License
 
-Contributions are accepted under the [Apache 2.0 License](LICENSE) that covers
+Contributions are accepted under the [Apache 2.0 License](https://github.com/phonginreallife/kernelseal/blob/main/LICENSE) that covers
 the project.
