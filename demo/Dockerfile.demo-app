@@ -15,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=demo" \
     -o /kernelseal-exec ./cmd/kernelseal-exec
 
-FROM alpine:3.19
+FROM alpine:3.24
 
 # hadolint ignore=DL3018
 RUN apk add --no-cache curl
