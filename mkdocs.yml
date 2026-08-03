@@ -1,5 +1,5 @@
 site_name: KernelSeal
-site_description: Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM
+site_description: Kernel-level secret protection for Linux and Kubernetes, using eBPF and BPF-LSM
 site_url: https://phonginreallife.github.io/kernelseal/
 repo_url: https://github.com/phonginreallife/kernelseal
 repo_name: phonginreallife/kernelseal
@@ -76,6 +76,7 @@ nav:
   - Getting started:
       - Requirements: getting-started/requirements.md
       - Quick start: getting-started/quickstart.md
+      - Standalone Linux: getting-started/standalone.md
       - Deploy to Kubernetes: getting-started/kubernetes.md
   - Concepts:
       - How it works: concepts/how-it-works.md

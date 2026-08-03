@@ -1,12 +1,13 @@
 # KernelSeal
 
-**Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM**
+**Kernel-level secret protection for Linux and Kubernetes, using eBPF and BPF-LSM**
 
 KernelSeal delivers application secrets directly into a process's environment at
 exec time and uses BPF-LSM to stop anything else on the host from reading them
-back out. Secrets are never written to the container filesystem, never mounted as
-a volume, and cannot be recovered from `/proc/<pid>/environ` afterwards, even by
-root inside the container.
+back out. Secrets are never written to a filesystem, never mounted as a volume,
+and cannot be recovered from `/proc/<pid>/environ` afterwards, even by root. It
+runs on any Linux host that satisfies the kernel requirements; Kubernetes adds
+authorization by pod.
 
 ![An application reads its secret from the environment while root is refused by
 the kernel: environ, mem and maps all return "Operation not permitted", a ptrace
@@ -62,6 +63,13 @@ them: `fileRef` reads whatever a Vault agent sidecar wrote.
     to read its environment.
 
     [Quick start](getting-started/quickstart.md)
+
+- **Not running Kubernetes?**
+
+    The agent and the shim are plain Linux. On a systemd host, `cgroupPath`
+    selectors authorize by unit rather than by pod.
+
+    [Standalone Linux](getting-started/standalone.md)
 
 - **Deploy it**
 

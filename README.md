@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/phonginreallife/kernelseal)](https://github.com/phonginreallife/kernelseal/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-**Kernel-level secret protection for Kubernetes using eBPF and BPF-LSM**
+**Kernel-level secret protection for Linux and Kubernetes, using eBPF and BPF-LSM**
 
 ![An application reads its secret from the environment while root is refused by
 the kernel: environ, mem and maps all return "Operation not permitted", a ptrace
@@ -14,9 +14,10 @@ attach is denied, and id -u reports 0](docs/kernelseal-demo.gif)
 
 KernelSeal delivers application secrets directly into a process's environment at
 exec time and uses BPF-LSM to stop anything else on the host from reading them
-back out. Secrets are never written to the container filesystem, never mounted as
-a volume, and cannot be recovered from `/proc/<pid>/environ` afterwards, even by
-root inside the container.
+back out. Secrets are never written to a filesystem, never mounted as a volume,
+and cannot be recovered from `/proc/<pid>/environ` afterwards, even by root. It
+runs on any Linux host that satisfies the kernel requirements; Kubernetes adds
+authorization by pod.
 
 ## Key features
 
@@ -91,8 +92,10 @@ would-be denials but allow them), and `enforce` (log and deny).
   matters)
 - **Capabilities:** `SYS_ADMIN`, `BPF`, `PERFMON`, and `SYS_RESOURCE` (the last is
   needed to raise `RLIMIT_MEMLOCK` for BPF maps)
-- **Kubernetes:** 1.20+
-- **Container runtime:** containerd or CRI-O
+- **Kubernetes (optional):** 1.20+ with containerd or CRI-O, needed only for
+  authorization by pod. On a standalone host, `cgroupPath` selectors authorize by
+  systemd unit instead. See the
+  [standalone guide](https://phonginreallife.github.io/kernelseal/getting-started/standalone/)
 
 ### Checking support
 
@@ -127,8 +130,8 @@ This produces two binaries:
 
 | Binary | Runs where | Purpose |
 |---|---|---|
-| `build/kernelseal` | Privileged sidecar or DaemonSet | Loads BPF, serves secrets |
-| `build/kernelseal-exec` | Inside the application container | Wraps the entrypoint |
+| `build/kernelseal` | Privileged sidecar, DaemonSet, or a systemd unit on the host | Loads BPF, serves secrets |
+| `build/kernelseal-exec` | Inside the application container, or in front of a service's `ExecStart` | Wraps the entrypoint |
 
 ### Try it locally
 

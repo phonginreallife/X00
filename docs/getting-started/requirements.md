@@ -36,7 +36,7 @@ and a reboot.
 | Kernel BTF at `/sys/kernel/btf/vmlinux` | CO-RE relocates the prebuilt objects to your kernel |
 | `CONFIG_BPF=y`, `CONFIG_BPF_SYSCALL=y`, `CONFIG_BPF_LSM=y`, `CONFIG_DEBUG_INFO_BTF=y` | Loading and attaching |
 | `SYS_ADMIN`, `BPF`, `PERFMON`, `SYS_RESOURCE` | The last raises `RLIMIT_MEMLOCK` for BPF maps |
-| Kubernetes 1.20+, containerd or CRI-O | Pod attribution parses container runtime cgroup paths |
+| Kubernetes 1.20+, containerd or CRI-O | Only for authorization by pod. Not needed [standalone](standalone.md) |
 
 ## Check a node properly
 
