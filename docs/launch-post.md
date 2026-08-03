@@ -81,12 +81,59 @@ it. Secret delivery is bound to a real process that really exists, which is also
 what makes step 2 above possible: the agent knows which PID to protect because the
 kernel told it.
 
-I want to be precise about the limit of this, because it is the kind of thing
-people assume is stronger than it is. `SO_PEERCRED` proves *which process* is
-calling. It does not prove *which binary that process is about to become*. At
-handshake time `/proc/<pid>/exe` still points at the shim, since the exec has not
-happened yet. The binary name in the request selects which secrets apply. It is
-not an identity claim, and KernelSeal's docs say so in those words.
+But `SO_PEERCRED` proves *which process* is calling. It does not prove *which
+binary that process is about to become*. At handshake time `/proc/<pid>/exe` still
+points at the shim, because the exec has not happened yet.
+
+For two releases that gap was wider than I was comfortable with, and it is worth
+describing plainly rather than in the abstract. The binary name in the request was
+the only thing authorization rested on, and the request is a JSON object containing
+a string:
+
+```bash
+echo '{"binary":"/usr/bin/node"}' | nc -U /run/kernelseal/kernelseal.sock
+```
+
+No subterfuge. A compromised container did not need to install that binary, rename
+anything, or execute anything. On a node-wide DaemonSet, whose socket is a
+`hostPath` that every pod can mount, that was cross-tenant secret disclosure. The
+documented answer was to run one agent per pod so the socket itself was the
+boundary, which works but amounts to telling you to deploy around the problem.
+
+The fix is to authorize on something the caller cannot say. The kernel puts every
+container in a cgroup when it is created, and a process cannot change its own
+cgroup from inside the container. So the agent reads the calling PID's cgroup from
+procfs, parses the pod UID out of the path, and looks that UID up against the pods
+scheduled on its own node. Bindings then select on the pod:
+
+```yaml
+secrets:
+  - name: checkout-db
+    selector:
+      binary: node            # narrows which of this pod's bindings apply
+      namespace: payments     # authorizes: derived from the caller's cgroup
+      labels:
+        app: checkout
+```
+
+The `nc` command above now fails on a node-wide agent. `nc` runs in some pod's
+cgroup, that pod does not match the selector, and the request is refused and
+audited whatever it calls itself. The binary name survives as what it always
+honestly was: a way to narrow what a pod is already entitled to.
+
+How strictly this applies is a deployment question rather than a preference, so it
+is a setting. `required` refuses any caller it cannot attribute to a pod and is
+what the DaemonSet ships. `preferred`, the default, enforces pod selectors when
+they are present but still serves bindings without one, which is right for a
+sidecar whose socket is already reachable from exactly one pod. An unrecognized
+value is treated as `required`, because a typo in the setting that governs
+authorization should not quietly widen it.
+
+Two things this deliberately does not close. Inside a single pod the binary name is
+still only a claim, so pod identity separates tenants and not processes within one
+tenant. And pod labels are mutable, so anyone who can patch a pod's labels can make
+it match a `labels` selector; bind on `namespace` too, and treat label-write access
+as equivalent to access to the secrets those labels select.
 
 ## Two bugs that are worth your time
 
@@ -162,10 +209,14 @@ yourself.
   enough. On most distributions, and on EKS AL2023, this means a kernel command
   line change and a reboot. Note that `lsm=` replaces the list rather than
   appending to it, so read the current value before setting it.
-- **Socket reachability is the authorization boundary.** Any process that can open
-  the delivery socket can request the secrets bound to any configured binary by
-  naming it. Run one agent per pod. A node-wide agent serves one socket to every
-  pod on the node.
+- **Within a pod, the binary name is still only a claim.** Cgroup authorization
+  separates tenants, not processes inside one tenant. Any process in a pod can ask
+  for any binding that pod is entitled to.
+- **The cgroup-to-pod mapping has unit tests, not field miles.** It is covered
+  against recorded path shapes for the systemd and cgroupfs drivers with
+  containerd, CRI-O and Docker, including guaranteed-QoS pods, non-default kubelet
+  cgroup roots and cgroup v1. It has not yet run on a live EKS node. If you try it
+  on a cluster I did not build, that is the report I most want.
 - **The shim is inside the trust boundary.** It handles plaintext between the
   socket read and the exec.
 - **Agent restarts end protection silently.** The BPF maps do not survive the agent
@@ -176,9 +227,9 @@ yourself.
 - **Go strings cannot be reliably zeroed**, so values may persist in the agent's
   heap until collected.
 
-The gaps are tracked in the open, and several of them converge on the same fix:
-authorize on the caller's cgroup, which the kernel sets and which maps to a pod,
-instead of on a name the caller supplies.
+The gaps are tracked in the open. The largest one on that list until recently was
+the authorization boundary described above, which is the section of this post I
+have most enjoyed rewriting.
 
 ## Try it against your own nodes
 
@@ -197,6 +248,7 @@ the attach still fails.
 KernelSeal is Apache 2.0 at
 [github.com/phonginreallife/kernelseal](https://github.com/phonginreallife/kernelseal).
 Release images and artifacts are signed with cosign keyless signing and ship an
-SPDX SBOM. I am most interested in hearing from anyone who tries the probe against
-a cluster they did not build themselves, and in being told which part of the claim
-above does not hold.
+SPDX SBOM, and the verification instructions insist on the certificate identity,
+because `cosign verify` without it accepts a signature from anybody at all.
+
+What I would most like back is the part of the claim above that does not hold.
