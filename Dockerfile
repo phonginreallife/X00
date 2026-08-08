@@ -9,7 +9,7 @@ ARG TARGETARCH=amd64
 #
 # bpf/vmlinux.h is generated on the CI/release runner from the host BTF and
 # passed in the build context. Each platform compiles its own *.bpf.o here.
-FROM ubuntu:22.04 AS bpf-builder
+FROM ubuntu:26.04 AS bpf-builder
 
 # hadolint ignore=DL3009
 RUN apt-get update && \
