@@ -33,7 +33,7 @@ RUN set -eu; \
     ls -la bpf/*.bpf.o
 
 # Stage 2: Build Go binaries
-FROM golang:1.22-alpine AS go-builder
+FROM golang:1.27-alpine AS go-builder
 WORKDIR /app
 
 # Copy go mod files first so dependency downloads cache independently of source.
